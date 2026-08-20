@@ -69,6 +69,21 @@ allowed_test_binaries = ["uv", "python3", "npm"]
                 with self.assertRaisesRegex(ValueError, "provider selection is manual-only"):
                     TaskRequest.from_dict(data)
 
+    def test_rejects_unsafe_allowed_paths(self):
+        for unsafe_path in ("/absolute/path.py", "../outside.py", "src/../secret.py"):
+            with self.subTest(unsafe_path=unsafe_path):
+                with self.assertRaisesRegex(ValueError, "allowed_paths must be relative"):
+                    TaskRequest.from_dict(
+                        {
+                            "repository": "/tmp/example",
+                            "task": "fix the parser",
+                            "acceptance_criteria": ["tests pass"],
+                            "mode": "edit",
+                            "test_commands": [],
+                            "allowed_paths": [unsafe_path],
+                        }
+                    )
+
 
 from claude_worker_router.provider import fingerprint_provider, read_provider_snapshot
 

@@ -122,6 +122,8 @@ class ExecutorCliTests(unittest.TestCase):
         mode: str = "edit",
         fake_behavior: str = "fix",
         token: str = "irrelevant-token",
+        test_commands: tuple[TestCommand, ...] | None = None,
+        allowed_paths: tuple[str, ...] = (),
     ) -> FixtureRun:
         """Drive ``execute_task`` against an arbitrary pre-seeded repository.
 
@@ -180,10 +182,12 @@ class ExecutorCliTests(unittest.TestCase):
                 task="fix the fixture",
                 acceptance_criteria=("example.txt should contain 'worker'",),
                 mode=RunMode(mode),
-                test_commands=(
+                test_commands=test_commands
+                if test_commands is not None
+                else (
                     TestCommand(argv=("uv", "run", "python", "-m", "unittest")),
                 ),
-                allowed_paths=(),
+                allowed_paths=allowed_paths,
             )
 
             result = execute_task(request, config)
@@ -221,12 +225,81 @@ class ExecutorCliTests(unittest.TestCase):
     def test_passes_prompt_on_stdin_and_never_grants_bash(self) -> None:
         fixture = self.run_fixture(mode="edit", fake_behavior="fix")
         argv = fixture.captured_claude_argv
+        self.assertIn("--safe-mode", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "acceptEdits")
         self.assertIn("--tools", argv)
         tools = argv[argv.index("--tools") + 1]
+        self.assertEqual(tools, "Read,Glob,Grep,Edit,Write")
+        self.assertIn("--allowedTools", argv)
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], tools)
         self.assertNotIn("Bash", tools)
         self.assertNotIn("--settings", argv)
+        self.assertNotIn("--model", argv)
         self.assertNotIn("fix the fixture", " ".join(argv))
         self.assertEqual(fixture.result.status, "ready-for-review")
+
+    def test_read_only_mode_exposes_no_edit_tools_and_never_mutates_repository(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="executor-cli-read-only-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repository = _init_fixture_repository(tmp / WORKTEE_REPO_NAME)
+
+        fixture = self._run_executor_against(
+            tmp,
+            repository,
+            mode="read-only",
+            fake_behavior="attempt-write-if-enabled",
+        )
+
+        argv = fixture.captured_claude_argv
+        self.assertIn("--safe-mode", argv)
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Glob,Grep")
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Glob,Grep")
+        self.assertEqual(fixture.result.status, "read-only")
+        self.assertEqual(fixture.result.tests, [])
+        self.assertIsNone(fixture.result.commit)
+        self.assertEqual(
+            (repository / "example.txt").read_text(encoding="utf-8"),
+            "main\n",
+        )
+
+    def test_changed_path_outside_allowed_scope_escalates_without_commit(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="executor-cli-scope-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repository = _init_fixture_repository(tmp / WORKTEE_REPO_NAME)
+
+        fixture = self._run_executor_against(
+            tmp,
+            repository,
+            fake_behavior="fix-and-outside",
+            allowed_paths=("example.txt",),
+        )
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "path-scope-exceeded")
+        self.assertIsNone(fixture.result.commit)
+        self.assertEqual(
+            (repository / "example.txt").read_text(encoding="utf-8"),
+            "main\n",
+        )
+
+    def test_passing_tests_with_no_changes_skip_empty_commit(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="executor-cli-no-change-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repository = _init_fixture_repository(tmp / WORKTEE_REPO_NAME)
+
+        fixture = self._run_executor_against(
+            tmp,
+            repository,
+            fake_behavior="no-change",
+            test_commands=(
+                TestCommand(argv=("uv", "run", "python", "-c", "pass")),
+            ),
+        )
+
+        self.assertEqual(fixture.result.status, "ready-for-review")
+        self.assertEqual(fixture.result.changed_files, [])
+        self.assertIsNone(fixture.result.commit)
 
     def test_runs_approved_tests_with_shell_false(self) -> None:
         fixture = self.run_fixture(mode="edit", fake_behavior="fix")

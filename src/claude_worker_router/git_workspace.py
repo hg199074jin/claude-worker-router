@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class DirtyCheckoutError(RuntimeError):
@@ -13,6 +13,10 @@ class DirtyCheckoutError(RuntimeError):
 
 class ScopeExceededError(RuntimeError):
     """Raised when worker edits exceed the configured change budget."""
+
+
+class PathScopeExceededError(ScopeExceededError):
+    """Raised when worker edits escape the request's allowed path prefixes."""
 
 
 @dataclass(frozen=True)
@@ -41,10 +45,23 @@ class GitWorkspace:
 
         return cls(repository=resolved, path=worktree_root, branch=branch, run_id=run_id)
 
-    def measure_changes(self, max_files: int, max_diff_lines: int) -> ChangeMeasure:
+    def measure_changes(
+        self,
+        max_files: int,
+        max_diff_lines: int,
+        allowed_paths: tuple[str, ...] = (),
+    ) -> ChangeMeasure:
         """Count tracked and untracked files plus numstat lines, then enforce budgets."""
         files = _list_changed_files(self.path)
         diff_lines = _count_diff_lines(self.path)
+
+        outside_scope = tuple(
+            path for path in files if allowed_paths and not _is_allowed_path(path, allowed_paths)
+        )
+        if outside_scope:
+            raise PathScopeExceededError(
+                "changed paths outside allowed scope: " + ", ".join(outside_scope)
+            )
 
         if len(files) > max_files or diff_lines > max_diff_lines:
             raise ScopeExceededError(
@@ -161,3 +178,12 @@ def _parse_numstat_count(value: str) -> int:
     if value in ("", "-"):
         return 0
     return int(value)
+
+
+def _is_allowed_path(changed_path: str, allowed_paths: tuple[str, ...]) -> bool:
+    changed_parts = PurePosixPath(changed_path).parts
+    return any(
+        changed_parts[: len(PurePosixPath(allowed).parts)]
+        == PurePosixPath(allowed).parts
+        for allowed in allowed_paths
+    )

@@ -10,7 +10,8 @@ called (argv list, ``shell=False``).
 Environment variables consumed:
 
 * ``FAKE_CLAUDE_BEHAVIOR`` -- one of ``fix``, ``fail-then-fix``, ``always-fail``,
-  ``provider-change``, ``provider-error``.
+  ``provider-change``, ``provider-error``, ``attempt-write-if-enabled``,
+  ``fix-and-outside``, or ``no-change``.
 * ``FAKE_CLAUDE_WORKTREE`` -- absolute path of the worktree to edit (defaults to
   the current working directory).
 * ``FAKE_CLAUDE_SETTINGS_PATH`` -- absolute path of the provider settings file
@@ -82,6 +83,17 @@ def _maybe_modify_settings(behavior: str) -> None:
 
 def _maybe_apply_edit(behavior: str, count: int, worktree: Path) -> None:
     target = worktree / _PROMPT_TARGET
+    if behavior == "attempt-write-if-enabled":
+        tools = sys.argv[sys.argv.index("--tools") + 1] if "--tools" in sys.argv else ""
+        if "Edit" in tools or "Write" in tools:
+            target.write_text("worker\n", encoding="utf-8")
+        return
+    if behavior == "fix-and-outside":
+        target.write_text("worker\n", encoding="utf-8")
+        (worktree / "outside.txt").write_text("outside\n", encoding="utf-8")
+        return
+    if behavior == "no-change":
+        return
     if behavior == "always-fail":
         return
     if behavior == "fix":

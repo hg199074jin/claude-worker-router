@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from .config import RouterConfig
-from .git_workspace import DirtyCheckoutError, GitWorkspace, ScopeExceededError
+from .git_workspace import (
+    DirtyCheckoutError,
+    GitWorkspace,
+    PathScopeExceededError,
+    ScopeExceededError,
+)
 from .models import RunMode, RunResult, TaskRequest, TestCommand
 from .provider import (
     ProviderConfigError,
@@ -30,6 +35,7 @@ from .provider import (
 #: The complete tool whitelist exposed to the Claude worker. ``Bash`` is
 #: deliberately excluded; the executor alone runs the approved test argv arrays.
 WORKER_TOOLS = "Read,Glob,Grep,Edit,Write"
+READ_ONLY_TOOLS = "Read,Glob,Grep"
 
 
 @dataclass(frozen=True)
@@ -112,7 +118,9 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         _write_records(config, run_id, request, result)
         return result
 
-    if loop_result.tests and all(t["exit_code"] == 0 for t in loop_result.tests):
+    if request.mode == RunMode.READ_ONLY:
+        _set_status(result, "read-only")
+    elif loop_result.tests and all(t["exit_code"] == 0 for t in loop_result.tests):
         _set_status(result, "ready-for-review")
     else:
         _set_escalation(result, "tests-failed-after-correction", last_summary)
@@ -120,10 +128,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     if workspace is not None and result.status == "ready-for-review":
         try:
             measure = workspace.measure_changes(
-                config.max_changed_files, config.max_diff_lines
+                config.max_changed_files,
+                config.max_diff_lines,
+                request.allowed_paths,
             )
             result.changed_files = list(measure.files)
             result.diff_lines = measure.diff_lines
+        except PathScopeExceededError as exc:
+            _set_escalation(result, "path-scope-exceeded", str(exc))
         except ScopeExceededError as exc:
             _set_escalation(result, "scope-exceeded", str(exc))
 
@@ -140,7 +152,11 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         _write_records(config, run_id, request, result)
         return result
 
-    if workspace is not None and result.status == "ready-for-review":
+    if (
+        workspace is not None
+        and result.status == "ready-for-review"
+        and result.changed_files
+    ):
         commit_sha = workspace.commit_worker_change(
             f"codex-worker: {_short_task(request.task)}"
         )
@@ -194,7 +210,7 @@ def _run_worker_loop(
 
     while attempts <= config.correction_limit:
         attempts += 1
-        outcome = _invoke_worker(config, prompt, cwd)
+        outcome = _invoke_worker(config, prompt, cwd, request.mode)
         last_summary = outcome.summary
 
         if outcome.status == "provider-unreachable":
@@ -203,6 +219,14 @@ def _run_worker_loop(
                 tests=tests,
                 summary=last_summary,
                 worker_failed=True,
+            )
+
+        if request.mode == RunMode.READ_ONLY:
+            return _WorkerLoopResult(
+                attempts=attempts,
+                tests=[],
+                summary=last_summary,
+                worker_failed=False,
             )
 
         tests = _run_all_tests(request.test_commands, cwd, config)
@@ -238,16 +262,20 @@ def _invoke_worker(
     config: RouterConfig,
     prompt: str,
     cwd: Path,
+    mode: RunMode,
 ) -> _WorkerOutcome:
     """Invoke Claude with the bounded argv contract; never raises."""
+    tools, permission_mode = _worker_policy(mode)
     argv = [
         config.command,
+        "--safe-mode",
         "--print",
         "--input-format", "text",
         "--output-format", "json",
         "--max-turns", str(config.max_turns),
-        "--permission-mode", "acceptEdits",
-        "--tools", WORKER_TOOLS,
+        "--permission-mode", permission_mode,
+        "--tools", tools,
+        "--allowedTools", tools,
     ]
 
     try:
@@ -323,10 +351,18 @@ def _build_prompt(request: TaskRequest, config: RouterConfig) -> str:
         f"- max_changed_files: {config.max_changed_files}\n"
         f"- max_diff_lines: {config.max_diff_lines}\n\n"
         "CONSTRAINTS\n"
-        "- Use only the allowed tools (Read, Glob, Grep, Edit, Write). Never use Bash.\n"
+        "- Before acting, locate and read applicable AGENTS.md and CLAUDE.md files in the repository.\n"
+        f"- Use only these tools: {_worker_policy(request.mode)[0]}. Never use Bash.\n"
+        f"- Mode: {request.mode.value}; do not edit in read-only mode.\n"
         "- Do not modify Claude settings or provider configuration.\n"
         "- Stop immediately on hard risk gates.\n"
     )
+
+
+def _worker_policy(mode: RunMode) -> tuple[str, str]:
+    if mode == RunMode.READ_ONLY:
+        return READ_ONLY_TOOLS, "dontAsk"
+    return WORKER_TOOLS, "acceptEdits"
 
 
 def _build_correction_prompt(

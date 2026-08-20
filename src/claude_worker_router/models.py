@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -45,10 +45,11 @@ class TaskRequest:
             raise ValueError("acceptance_criteria must be strings")
         mode = RunMode(data.get("mode", "edit"))
         commands = tuple(TestCommand.from_value(item) for item in data.get("test_commands", []))
-        allowed_paths = data.get("allowed_paths", [])
-        if not isinstance(allowed_paths, list) or not all(isinstance(item, str) and item for item in allowed_paths):
+        raw_allowed_paths = data.get("allowed_paths", [])
+        if not isinstance(raw_allowed_paths, list) or not all(isinstance(item, str) and item for item in raw_allowed_paths):
             raise ValueError("allowed_paths must be strings")
-        return cls(Path(repository).resolve(), task.strip(), tuple(criteria), mode, commands, tuple(allowed_paths))
+        allowed_paths = tuple(_normalize_allowed_path(item) for item in raw_allowed_paths)
+        return cls(Path(repository).resolve(), task.strip(), tuple(criteria), mode, commands, allowed_paths)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the request for the redacted run record (no env, no tokens)."""
@@ -107,3 +108,10 @@ class RunResult:
             "escalation_reason": self.escalation_reason,
             "attempts": self.attempts,
         }
+
+
+def _normalize_allowed_path(value: str) -> str:
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or any(part in (".", "..") for part in path.parts):
+        raise ValueError("allowed_paths must be relative paths without parent traversal")
+    return str(path)
