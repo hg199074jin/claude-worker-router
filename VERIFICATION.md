@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **31 tests, all PASS** (8.650s).
+Result: **31 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
