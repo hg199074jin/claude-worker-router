@@ -83,12 +83,12 @@ preflight is the same absolute file used for the worker invocation.
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `250b2bb43f744028aaa00258b825cccf`                                  |
+| Run identifier      | `2d6fa2a1577f46989baadbf6befe7a0b`                                  |
 | Status              | `read-only`                                                          |
 | Attempts            | 1                                                                    |
 | Commit              | none                                                                 |
 | Executor-run tests  | none                                                                 |
-| Run record          | `/Users/sandro/.codex/model-router/runs/250b2bb43f744028aaa00258b825cccf` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/2d6fa2a1577f46989baadbf6befe7a0b` |
 
 The task repository hash was identical before and after the call. The Claude
 session used only `Glob` and `Read`; no `Edit`, `Write`, or `Bash` call was
@@ -98,14 +98,14 @@ made.
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `812fcbad78a5416a96a3215a0472f4db`                                  |
+| Run identifier      | `e34455b939ee462cbd5b4d8f7b5150e0`                                  |
 | Status              | `ready-for-review`                                                  |
 | Attempts            | 1                                                                   |
 | Changed files       | `discount.py`                                                       |
 | Diff lines          | 2                                                                   |
-| Worker commit       | `e5db0062c8868fe49108a50aaf9b4d90fb536d92`                         |
-| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.cwGeqxmcuS` |
-| Run record          | `/Users/sandro/.codex/model-router/runs/812fcbad78a5416a96a3215a0472f4db` |
+| Worker commit       | `c9b75759f173118d15c6794ba21a051a6d6bd0ca`                         |
+| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.H0nnDyiWc3` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/e34455b939ee462cbd5b4d8f7b5150e0` |
 
 ## Main-Checkout Isolation Proof
 
