@@ -7,6 +7,14 @@ from .models import RouterConfig
 _PROVIDER_MODES = {"cc-switch-current"}
 
 
+DEFAULT_CONFIG_PATH = Path.home() / ".codex/model-router/config.toml"
+
+
+def default_config_path() -> Path:
+    """Return the canonical default router configuration path under the user's home."""
+    return DEFAULT_CONFIG_PATH
+
+
 def load_config(path: Path) -> RouterConfig:
     """Load a credential-free router configuration and validate its bounds."""
     with Path(path).open("rb") as fh:

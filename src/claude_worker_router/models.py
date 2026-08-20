@@ -50,6 +50,17 @@ class TaskRequest:
             raise ValueError("allowed_paths must be strings")
         return cls(Path(repository).resolve(), task.strip(), tuple(criteria), mode, commands, tuple(allowed_paths))
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the request for the redacted run record (no env, no tokens)."""
+        return {
+            "repository": str(self.repository),
+            "task": self.task,
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "mode": self.mode.value,
+            "test_commands": [list(cmd.argv) for cmd in self.test_commands],
+            "allowed_paths": list(self.allowed_paths),
+        }
+
 
 @dataclass(frozen=True)
 class RouterConfig:
