@@ -21,6 +21,22 @@ request should stay in Codex or be delegated to the Claude Code worker.
 - "Claude Code worker" means the provider currently selected in CC Switch.
   Do not assume a specific provider unless the user names one explicitly.
 
+## Hard Codex gates
+
+A task must stay under Codex control, and may not be delegated to the worker,
+when any of the following applies:
+
+- authentication, authorization, secrets, cryptography, or security boundaries
+- payment, billing, financial transfers, or regulated-data handling
+- destructive data operations or irreversible migrations
+- production deployment, infrastructure mutation, or remote write operations
+- major architecture or public-interface decisions spanning multiple subsystems
+- changes that cannot be checked with a bounded diff and observable tests
+- an explicit user instruction to use only Codex
+
+In any of these cases the worker may provide only a read-only second opinion;
+Codex remains the owner of the work.
+
 ## Provider selection discipline
 
 - Provider selection and switching are manual-only. Never load alternate
