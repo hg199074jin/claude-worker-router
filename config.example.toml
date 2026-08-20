@@ -1,0 +1,13 @@
+[worker]
+command = "claude"
+provider = "cc-switch-current"
+max_turns = 12
+timeout_seconds = 1200
+correction_limit = 1
+max_changed_files = 5
+max_diff_lines = 500
+allowed_test_binaries = ["uv", "python3", "npm"]
+
+run_records = "/Users/sandro/.codex/model-router/runs"
+test_output_limit_bytes = 65536
+claude_settings = "/Users/sandro/.claude/settings.json"
