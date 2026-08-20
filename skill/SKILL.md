@@ -1,6 +1,6 @@
 ---
 name: claude-worker-router
-description: Route coding implementation, debugging, testing, refactoring, and code-review work between Codex and a provider-neutral Claude Code worker. Use before implementation when a Git project may benefit from delegating bounded, reversible, testable work; keep high-risk or architectural work under Codex control.
+description: Use before coding implementation, debugging, testing, refactoring, or code review in a Git project when bounded, reversible, testable work may be delegated to a provider-neutral Claude Code worker.
 ---
 
 # Claude Code Worker Router
@@ -57,16 +57,29 @@ Codex remains the owner of the work.
 
 - Require clean Git for any worker edits. Uncommitted or untracked changes
   block delegation.
+- After this skill is installed, never bypass the executor with a direct
+  implementation call to `claude -p`. All delegated implementation and
+  analysis requests go through `scripts/run_worker.py` so the permission,
+  provider, evidence, and isolation checks are always applied.
 - Send a single structured JSON request over stdin to
   `scripts/run_worker.py`. Do not pass the task as free-form prose.
+- For edit mode, give the worker only repository reading and file-editing
+  tools inside its isolated worktree. For read-only mode, expose only Read,
+  Glob, and Grep; never expose Edit or Write.
 - Supply test commands as argv arrays, and only after Codex has verified
   those commands are project-local tests. Do not pass commands Codex has
   not confirmed.
+- The worker does not run tests, Git commands, version discovery, or inspect
+  run records outside its working directory. The Python executor runs tests
+  and Git; Codex inspects global configuration and retained evidence.
 - Review the diff and test evidence Codex receives before integrating any
   worker change.
 - Never auto-integrate on escalation or on a provider-fingerprint
   mismatch. Both conditions return control to Codex and require explicit
   user direction.
+- Treat `worker-permission-denied`, `worker-turn-limit`, `worker-timeout`,
+  `worker-output-invalid`, `test-timeout`, and path-scope failures as distinct
+  takeover reasons. Do not retry them as generic provider failures.
 
 ## Per-task overrides
 

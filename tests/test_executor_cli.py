@@ -30,6 +30,8 @@ from tests.helpers import _git, init_repository
 FAKE_CLAUDE_SOURCE = Path(__file__).resolve().parent / "fake_claude.py"
 WORKTEE_REPO_NAME = "fixture-repo"
 ENV_KEYS: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "FAKE_CLAUDE_BEHAVIOR",
     "FAKE_CLAUDE_WORKTREE",
     "FAKE_CLAUDE_SETTINGS_PATH",
@@ -319,6 +321,42 @@ class ExecutorCliTests(unittest.TestCase):
             ["uv", "run", "python", "-m", "unittest"],
         )
 
+    def test_executor_tests_do_not_create_python_cache_scope_changes(self) -> None:
+        fixture = self.run_fixture(
+            mode="edit",
+            fake_behavior="fix",
+            allowed_paths=("example.txt",),
+        )
+
+        self.assertEqual(fixture.result.status, "ready-for-review")
+        self.assertEqual(fixture.result.changed_files, ["example.txt"])
+
+    def test_executor_tests_do_not_receive_provider_credentials(self) -> None:
+        os.environ["ANTHROPIC_AUTH_TOKEN"] = "parent-process-secret"
+        os.environ["ANTHROPIC_API_KEY"] = "parent-api-secret"
+        fixture = self.run_fixture(
+            mode="edit",
+            fake_behavior="fix",
+            test_commands=(
+                TestCommand(
+                    argv=(
+                        "uv",
+                        "run",
+                        "python",
+                        "-c",
+                        (
+                            "import os,sys; "
+                            "sys.exit(9 if any(k in os.environ for k in "
+                            "('ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY')) else 0)"
+                        ),
+                    )
+                ),
+            ),
+        )
+
+        self.assertEqual(fixture.result.tests[0]["exit_code"], 0)
+        self.assertEqual(fixture.result.status, "ready-for-review")
+
     def test_allows_one_correction_after_test_failure(self) -> None:
         fixture = self.run_fixture(mode="edit", fake_behavior="fail-then-fix")
         self.assertEqual(fixture.result.attempts, 2)
@@ -355,6 +393,12 @@ class ExecutorCliTests(unittest.TestCase):
 
     def test_malformed_worker_output_has_specific_escalation_reason(self) -> None:
         fixture = self.run_fixture(fake_behavior="malformed-output")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-output-invalid")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_compatibility_warning_alone_is_not_a_provider_failure(self) -> None:
+        fixture = self.run_fixture(fake_behavior="compat-warning-only")
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "worker-output-invalid")
         self.assertEqual(fixture.result.attempts, 1)

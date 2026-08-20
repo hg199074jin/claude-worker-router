@@ -1,9 +1,9 @@
-# Verified Baseline — Claude Code Worker Router
+# Verified V1.1 — Claude Code Worker Router
 
-This document records the end-to-end evidence for Task 6 of the
-Claude Code Worker Router implementation. It is the single human-facing
-summary of the deterministic suite, the bounded live CC Switch provider
-call, and the provider fingerprint retained from the run record.
+This document records the end-to-end evidence for the hardened V1.1 router.
+It covers deterministic tests, source and installed-skill validation, a
+read-only live call, an isolated edit live call, and the non-secret provider
+fingerprint retained in the run records.
 
 No authentication token value, full environment dump, or provider secret
 is included anywhere in this document.
@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **17 tests, all PASS** (3.735s).
+Result: **31 tests, all PASS** (8.650s).
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -61,16 +61,40 @@ Result: `Skill is valid!`
 The same validator was run against the installed symlink at
 `/Users/sandro/.codex/skills/claude-worker-router`; result: `Skill is valid!`.
 
-## Live Smoke Run (Bounded Single Call)
+The suite includes regressions for edit/read-only tool separation, path-scope
+enforcement, worker and executor failure classification, test timeouts, empty
+commits, Python cache suppression, and removal of Anthropic credentials from
+executor-run test environments. It also verifies that a third-party model
+compatibility warning without a valid result is classified as
+`worker-output-invalid`, not as a provider outage.
+
+## Live Read-Only Run
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `5ddc3aaee7c548368348a72e3d69378a`                                  |
+| Run identifier      | `7a0934d3b03c4d9388138b24b698d8e1`                                  |
+| Status              | `read-only`                                                          |
+| Attempts            | 1                                                                    |
+| Commit              | none                                                                 |
+| Executor-run tests  | none                                                                 |
+| Run record          | `/Users/sandro/.codex/model-router/runs/7a0934d3b03c4d9388138b24b698d8e1` |
+
+The task repository hash was identical before and after the call. The Claude
+session used only `Glob` and `Read`; no `Edit`, `Write`, or `Bash` call was
+made.
+
+## Live Isolated Edit Run
+
+| Field              | Value                                                                |
+| ------------------ | -------------------------------------------------------------------- |
+| Run identifier      | `f42084d9507f493998ce768e001a9916`                                  |
 | Status              | `ready-for-review`                                                  |
 | Attempts            | 1                                                                   |
-| Worker commit       | `db348162c7cca879f71b378ca9fb1f07617f4426`                         |
-| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.07D8b4PFBZ` |
-| Run record          | `/Users/sandro/.codex/model-router/runs/5ddc3aaee7c548368348a72e3d69378a` |
+| Changed files       | `discount.py`                                                       |
+| Diff lines          | 2                                                                   |
+| Worker commit       | `0c7170b5b91f6aa14155695cdd289d1856ca8891`                         |
+| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.9vVErxxIxu` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/f42084d9507f493998ce768e001a9916` |
 
 ## Main-Checkout Isolation Proof
 
@@ -95,6 +119,27 @@ The same validator was run against the installed symlink at
   `DiscountTests.test_twenty_five_percent_discount_on_two_hundred`.
 - The executor invoked these tests with `shell=False`; no shell expansion
   of the argv occurred.
+- The child test process ran with `PYTHONDONTWRITEBYTECODE=1`, so the test did
+  not create an out-of-scope `__pycache__` directory.
+- `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are removed from the child
+  test environment before tests start.
+
+## Permission and Hook Evidence
+
+- Both successful smoke calls used `--safe-mode`, so user settings, MCP
+  servers, skills, and hooks were not loaded for the worker session.
+- The two successful smoke session logs contain zero
+  `hook_additional_context` records.
+- The edit model attempted one unavailable `Bash` tool call. Claude Code
+  rejected it automatically with `No such tool available: Bash`; there was no
+  approval prompt or user interruption. MiniMax then completed the task using
+  `Glob`, `Read`, and `Edit` only.
+- The executor, not the model, owned the approved test and Git operations.
+
+A subsequent broad read-only review consumed its bounded turns without
+producing a valid result. It made no edits and exposed the compatibility-warning
+classification edge case covered by the new deterministic regression. It was
+not retried and no provider was switched automatically.
 
 ## Compatibility Warning
 
@@ -104,20 +149,18 @@ accepted.)
 
 ## Token Handling Statement
 
-No API token value, token hash, or token prefix was recorded, logged,
-inspected, stored, or otherwise retained by the worker router, the
-smoke driver, or this verification document. The provider fingerprint
-includes only the non-secret `endpoint_host` and `model` fields.
+No API token value, token hash, or token prefix is written to router run
+records, the smoke artifacts, or this verification document. The provider
+fingerprint includes only the non-secret `endpoint_host` and `model` fields,
+and provider credentials are withheld from executor-run tests.
 
-## Files Added by This Verification
+## Files Used by This Verification
 
 - `tests/live/fixture/discount.py`
 - `tests/live/fixture/test_discount.py`
 - `tests/live/run_smoke_test.sh`
 - `VERIFICATION.md`
 
-Transient artefacts (`tests/live/fixture/__pycache__/` and
-`tests/live/smoke_stdout.log`) are intentionally not committed:
-- `__pycache__/` is excluded by the project `.gitignore`.
-- `smoke_stdout.log` is a transient run output that the brief instructs
-  not to commit.
+The live smoke directory, both router run records, and the isolated worker
+worktree are intentionally retained for review. They are outside the project
+worktree and are not integrated automatically.

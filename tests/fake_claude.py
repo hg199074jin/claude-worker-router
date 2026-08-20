@@ -11,7 +11,7 @@ Environment variables consumed:
 
 * ``FAKE_CLAUDE_BEHAVIOR`` -- one of ``fix``, ``fail-then-fix``, ``always-fail``,
   ``provider-change``, ``provider-error``, ``attempt-write-if-enabled``,
-  ``fix-and-outside``, or ``no-change``.
+  ``compat-warning-only``, ``fix-and-outside``, or ``no-change``.
 * ``FAKE_CLAUDE_WORKTREE`` -- absolute path of the worktree to edit (defaults to
   the current working directory).
 * ``FAKE_CLAUDE_SETTINGS_PATH`` -- absolute path of the provider settings file
@@ -129,6 +129,11 @@ def main() -> int:
         return 1
     if behavior == "turn-limit":
         sys.stderr.write("max_turns_reached: turn limit exhausted\n")
+        return 1
+    if behavior == "compat-warning-only":
+        sys.stderr.write(
+            '[claude-code:unrecognized_model] {"model":"ThirdParty"}\n'
+        )
         return 1
     if behavior == "worker-timeout":
         time.sleep(0.25)

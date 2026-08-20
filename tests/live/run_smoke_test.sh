@@ -5,14 +5,15 @@
 #   1. Copy the fixture into a fresh mktemp -d directory.
 #   2. Initialize a local Git repository and commit the failing baseline.
 #   3. Record the main-checkout file hash (the one inside this worktree).
-#   4. Submit an edit request through the installed wrapper.
-#   5. Use the exact test argv
+#   4. Submit a read-only request and verify it cannot mutate the repository.
+#   5. Submit an edit request through the installed wrapper.
+#   6. Use the exact test argv
 #      ['uv', 'run', '--python', '3.12', 'python', '-m', 'unittest', '-v'].
-#   6. Verify the result status is ``ready-for-review``.
-#   7. Verify the main-checkout file hash did not change.
-#   8. Verify the worker commit changes ``+`` to ``-`` in compute_price.
-#   9. Verify test evidence reports exit code ``0``.
-#  10. Print the exact retained worktree and run-record paths for review.
+#   7. Verify the result status is ``ready-for-review``.
+#   8. Verify the main-checkout file hash did not change.
+#   9. Verify the worker commit changes ``+`` to ``-`` in compute_price.
+#  10. Verify test evidence reports exit code ``0``.
+#  11. Print the exact retained worktree and run-record paths for review.
 #
 # This script does NOT delete the live evidence automatically. The smoke-test
 # directory and the executor run records are retained for Codex review.
@@ -81,6 +82,7 @@ git -C "${work_dir}" commit --quiet -m "seed failing discount baseline"
 
 baseline_commit="$(git -C "${work_dir}" rev-parse HEAD)"
 note "baseline commit:      ${baseline_commit}"
+read_only_repo_hash_before="$(shasum -a 256 "${work_dir}/discount.py" | awk '{print $1}')"
 
 # Sanity check: baseline must fail the unittest before the worker runs.
 # Use unittest discovery so the pre-worker baseline exercises the fixture.
@@ -93,17 +95,58 @@ if [[ "${baseline_test_output}" != *"FAIL"* ]]; then
 fi
 note "baseline test result: failing as expected"
 
-# ----- 4. submit edit request through the installed wrapper -----------------
+# ----- 4. submit read-only request through the installed wrapper ------------
+
+read_only_request_json="$(printf '%s' \
+  '{"repository":"'"${work_dir}"'","task":"Inspect discount.py and report the arithmetic defect in compute_price. Do not edit any file.","acceptance_criteria":["identify that a discount must subtract rather than add"],"mode":"read-only","test_commands":[],"allowed_paths":["discount.py"]}')"
+
+note "invoking read-only worker"
+read_only_result_json="$(
+  printf '%s' "${read_only_request_json}" \
+    | "${WRAPPER}" \
+    || true
+)"
+
+if [[ -z "${read_only_result_json}" ]]; then
+  fail "read-only wrapper produced empty output"
+fi
+
+print -r -- "${read_only_result_json}" > "${SMOKE_ROOT}/read_only_result.json"
+
+read_only_status="$(json_field "${read_only_result_json}" "print(data['status'])")"
+read_only_run_id="$(json_field "${read_only_result_json}" "print(data['run_id'])")"
+read_only_commit="$(json_field "${read_only_result_json}" "print(data['commit'] or '')")"
+read_only_test_count="$(json_field "${read_only_result_json}" "print(len(data['tests']))")"
+read_only_repo_hash_after="$(shasum -a 256 "${work_dir}/discount.py" | awk '{print $1}')"
+
+note "read-only status:     ${read_only_status}"
+note "read-only run id:     ${read_only_run_id}"
+if [[ "${read_only_status}" != "read-only" ]]; then
+  fail "expected read-only status, got ${read_only_status}"
+fi
+if [[ -n "${read_only_commit}" || "${read_only_test_count}" != "0" ]]; then
+  fail "read-only run unexpectedly committed or ran tests"
+fi
+if [[ "${read_only_repo_hash_before}" != "${read_only_repo_hash_after}" ]]; then
+  fail "read-only worker changed the task repository"
+fi
+
+read_only_run_record="/Users/sandro/.codex/model-router/runs/${read_only_run_id}"
+if [[ ! -d "${read_only_run_record}" ]]; then
+  fail "read-only run record is missing: ${read_only_run_record}"
+fi
+
+# ----- 5. submit edit request through the installed wrapper -----------------
 
 request_json="$(printf '%s' \
   '{"repository":"'"${work_dir}"'","task":"In discount.py change the sign in compute_price so a 25%% discount on 200 yields 150.0. Do not modify any other file.","acceptance_criteria":["compute_price(200.0, 25.0) == 150.0","uv run --python 3.12 python -m unittest -v reports exit code 0"],"mode":"edit","test_commands":[["uv","run","--python","3.12","python","-m","unittest","-v"]],"allowed_paths":["discount.py"]}')"
 
 note "invoking wrapper:     ${WRAPPER}"
 
-# Feed request to wrapper through uv so its project runtime is available.
+# Feed the request to the installed executable wrapper.
 result_json="$(
   printf '%s' "${request_json}" \
-    | "${UV}" run --python 3.12 --quiet python "${WRAPPER}" \
+    | "${WRAPPER}" \
     || true
 )"
 
@@ -112,9 +155,9 @@ if [[ -z "${result_json}" ]]; then
 fi
 
 # Persist a copy of the raw result for review.
-echo "${result_json}" > "${SMOKE_ROOT}/result.json"
+print -r -- "${result_json}" > "${SMOKE_ROOT}/result.json"
 
-# ----- 6. verify the result status is ready-for-review ----------------------
+# ----- 7. verify the result status is ready-for-review ----------------------
 
 result_status="$(json_field "${result_json}" "print(data['status'])")"
 note "result status:        ${result_status}"
@@ -122,7 +165,7 @@ if [[ "${result_status}" != "ready-for-review" ]]; then
   fail "expected ready-for-review, got ${result_status}"
 fi
 
-# ----- 7. verify the main-checkout file hash did not change -----------------
+# ----- 8. verify the main-checkout file hash did not change -----------------
 
 main_hash_after="$(shasum -a 256 "${FIXTURE_DIR}/discount.py" | awk '{print $1}')"
 note "main hash after:      ${main_hash_after}"
@@ -149,14 +192,14 @@ note "diff_lines:           ${diff_lines}"
 note "provider host:        ${provider_host}"
 note "provider model:       ${provider_model}"
 
-# ----- 8. verify the worker commit changes + to - ----------------------------
+# ----- 9. verify the worker commit changes + to - ----------------------------
 
 if [[ -z "${worker_worktree}" || -z "${worker_commit}" ]]; then
   fail "worker did not record worktree/commit; cannot inspect diff"
 fi
 
 diff_text="$(git -C "${worker_worktree}" show "${worker_commit}" -- discount.py || true)"
-echo "${diff_text}" > "${SMOKE_ROOT}/worker_commit.diff"
+print -r -- "${diff_text}" > "${SMOKE_ROOT}/worker_commit.diff"
 
 if ! print -- "${diff_text}" | grep -Eq '^\+[[:space:]]*return price - price'; then
   fail "worker commit did not change + to - in compute_price. Diff:\n${diff_text}"
@@ -166,7 +209,7 @@ if print -- "${diff_text}" | grep -Eq '^[[:space:]]*return price \+ price'; then
 fi
 note "worker diff verified: + replaced with - in compute_price"
 
-# ----- 9. verify test evidence reports exit code 0 ---------------------------
+# ----- 10. verify test evidence reports exit code 0 --------------------------
 
 exit_codes="$(
   json_field "${result_json}" "print(' '.join(str(t['exit_code']) for t in data['tests']))"
@@ -176,7 +219,7 @@ if [[ "${exit_codes}" != "0" ]]; then
   fail "expected test exit code 0; got: ${exit_codes}"
 fi
 
-# ----- 10. print the exact retained worktree and run-record paths ------------
+# ----- 11. print the exact retained worktree and run-record paths ------------
 
 # Locate the exact run record directory returned for this invocation.
 run_records_dir="/Users/sandro/.codex/model-router/runs"
@@ -199,6 +242,7 @@ print -- "LIVE SMOKE TEST PASSED."
 print -- ""
 print -- "Retained evidence paths (do NOT delete):"
 print -- "  smoke root:           ${SMOKE_ROOT}"
+print -- "  read-only run record: ${read_only_run_record}"
 print -- "  worker worktree:      ${worker_worktree}"
 print -- "  worker commit:        ${worker_commit}"
 if [[ -d "${run_record}" ]]; then

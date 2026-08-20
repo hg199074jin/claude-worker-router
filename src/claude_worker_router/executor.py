@@ -1,10 +1,9 @@
 """Bounded Claude worker, test runner, and evidence writer.
 
 The executor never grants the worker Bash, never places the task on argv, and
-treats a single provider failure as ``provider-unreachable`` without trying an
-alternate profile. Subprocess invocations always use argv lists with
-``shell=False``; the only ``check=False`` exception (already in
-``git_workspace._count_diff_lines``) is preserved verbatim.
+never tries an alternate provider profile. Subprocess invocations always use
+argv lists with ``shell=False``; the only ``check=False`` exception (already
+in ``git_workspace._count_diff_lines``) is preserved verbatim.
 """
 
 from __future__ import annotations
@@ -36,6 +35,7 @@ from .provider import (
 #: deliberately excluded; the executor alone runs the approved test argv arrays.
 WORKER_TOOLS = "Read,Glob,Grep,Edit,Write"
 READ_ONLY_TOOLS = "Read,Glob,Grep"
+PROVIDER_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
 @dataclass(frozen=True)
@@ -58,12 +58,17 @@ def run_test_command(
     timeout: int,
     output_limit: int,
 ) -> dict[str, Any]:
-    """Run a single test argv array with ``shell=False`` and bounded capture."""
+    """Run a test without provider credentials or Python cache byproducts."""
     argv = list(command.argv)
+    test_env = os.environ.copy()
+    for key in PROVIDER_CREDENTIAL_ENV_KEYS:
+        test_env.pop(key, None)
+    test_env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         proc = subprocess.run(
             argv,
             cwd=str(cwd),
+            env=test_env,
             shell=False,
             check=False,
             text=True,
@@ -508,7 +513,19 @@ def _classify_worker_failure(stdout: str | None, stderr: str | None) -> str:
     )
     if any(marker in diagnostic for marker in permission_markers):
         return "worker-permission-denied"
-    return "provider-unreachable"
+    provider_markers = (
+        "connection refused",
+        "could not connect",
+        "unable to connect",
+        "authentication failed",
+        "unauthorized",
+        "rate limit",
+        "service unavailable",
+        "overloaded",
+    )
+    if any(marker in diagnostic for marker in provider_markers):
+        return "provider-unreachable"
+    return "worker-output-invalid"
 
 
 def _timeout_text(value: str | bytes | None) -> str:
