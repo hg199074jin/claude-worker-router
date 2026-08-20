@@ -120,3 +120,13 @@
 - [ ] Preserve path-scope violations as the primary reason when a provider
   mutation is detected in the same run.
 - [ ] Re-run the full deterministic suite and live read-only/edit acceptance.
+
+### Task 6: Preflight and local-failure hardening
+
+- [ ] Verify the configured Claude executable and provider settings before
+  creating an edit worktree.
+- [ ] Return `test-launch-failed` without retrying the worker when an approved
+  test executable is unavailable.
+- [ ] Return `evidence-write-failed` when the run-record directory cannot be
+  written, while still emitting the result to the caller.
+- [ ] Re-run deterministic, skill, live-provider, and clean-tree verification.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass
@@ -97,6 +98,15 @@ def run_test_command(
             "stderr": _truncate(_timeout_text(exc.stderr), output_limit),
             "timeout": True,
         }
+    except OSError as exc:
+        return {
+            "argv": argv,
+            "exit_code": 127,
+            "stdout": "",
+            "stderr": _truncate(str(exc), output_limit),
+            "timeout": False,
+            "error": "test-launch-failed",
+        }
     return {
         "argv": argv,
         "exit_code": proc.returncode,
@@ -112,27 +122,33 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     result = RunResult(run_id=run_id, status="escalated")
     result.provider = {"endpoint_host": "", "model": ""}
 
-    workspace = _prepare_workspace(request, run_id, result)
-
-    # ``_prepare_workspace`` escalates without returning a workspace when the
-    # edit target is unsafe: a dirty Git checkout or a non-Git directory. Stop
-    # here so the worker loop never runs against an unsafe target.
-    if workspace is None and result.escalation_reason is not None:
-        _write_records(config, run_id, request, result)
-        return result
+    if shutil.which(config.command) is None:
+        _set_escalation(
+            result,
+            "worker-launch-failed",
+            f"worker command is not executable or was not found: {config.command}",
+        )
+        return _finish_result(config, run_id, request, result)
 
     try:
         before_snapshot = read_provider_snapshot(config.claude_settings)
     except ProviderConfigError as exc:
         _set_escalation(result, "provider-config-error", str(exc))
-        _write_records(config, run_id, request, result)
-        return result
+        return _finish_result(config, run_id, request, result)
 
     result.provider = {
         "endpoint_host": before_snapshot.endpoint_host,
         "model": before_snapshot.model,
     }
     before_fingerprint = fingerprint_provider(before_snapshot)
+
+    workspace = _prepare_workspace(request, run_id, result)
+
+    # ``_prepare_workspace`` escalates without returning a workspace when the
+    # edit target is unsafe: a dirty Git checkout or a non-Git directory. Stop
+    # here so the worker loop never runs against an unsafe target.
+    if workspace is None and result.escalation_reason is not None:
+        return _finish_result(config, run_id, request, result)
 
     loop_result = _run_worker_loop(
         request, config, workspace.path if workspace else request.repository, run_id
@@ -174,16 +190,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             _append_summary(result, f"provider configuration check also failed: {exc}")
         else:
             _set_escalation(result, "provider-config-error", str(exc))
-        _write_records(config, run_id, request, result)
-        return result
+        return _finish_result(config, run_id, request, result)
 
     if after_fingerprint != before_fingerprint:
         if result.escalation_reason == "path-scope-exceeded":
             _append_summary(result, "provider configuration also changed")
         else:
             _set_escalation(result, "provider-configuration-changed", last_summary)
-        _write_records(config, run_id, request, result)
-        return result
+        return _finish_result(config, run_id, request, result)
 
     if (
         workspace is not None
@@ -197,8 +211,7 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         except (subprocess.CalledProcessError, OSError) as exc:
             _set_escalation(result, "git-commit-failed", _subprocess_summary(exc))
 
-    _write_records(config, run_id, request, result)
-    return result
+    return _finish_result(config, run_id, request, result)
 
 
 def _prepare_workspace(
@@ -274,6 +287,13 @@ def _run_worker_loop(
                 tests=tests,
                 summary="an executor-run test timed out",
                 escalation_reason="test-timeout",
+            )
+        if any(t.get("error") == "test-launch-failed" for t in tests):
+            return _WorkerLoopResult(
+                attempts=attempts,
+                tests=tests,
+                summary="an executor-run test command could not be launched",
+                escalation_reason="test-launch-failed",
             )
         if tests and all(t["exit_code"] == 0 for t in tests):
             return _WorkerLoopResult(
@@ -500,6 +520,19 @@ def _write_records(
     record_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(record_dir / "request.json", request.to_dict())
     _atomic_write_json(record_dir / "result.json", result.to_dict())
+
+
+def _finish_result(
+    config: RouterConfig,
+    run_id: str,
+    request: TaskRequest,
+    result: RunResult,
+) -> RunResult:
+    try:
+        _write_records(config, run_id, request, result)
+    except (OSError, TypeError, ValueError) as exc:
+        _set_escalation(result, "evidence-write-failed", str(exc))
+    return result
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:

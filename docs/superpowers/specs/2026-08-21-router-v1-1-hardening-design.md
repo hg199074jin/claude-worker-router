@@ -24,6 +24,11 @@ unrelated context. Provider authentication and model selection continue to
 come from the current CC Switch configuration; the executor never passes
 `--model` or `--settings`.
 
+Before creating an edit worktree, the executor verifies that the configured
+Claude command is executable and that the current provider settings can be
+parsed. Preflight failures return structured evidence without creating an
+unused branch or worktree.
+
 Edit runs use `acceptEdits` and expose plus pre-approve only
 `Read,Glob,Grep,Edit,Write`. Read-only runs use `dontAsk` and expose plus
 pre-approve only `Read,Glob,Grep`. Neither mode exposes Bash. Because safe mode
@@ -63,6 +68,7 @@ provider outage:
 - `worker-output-invalid` for malformed Claude JSON output;
 - `worker-cli-failed` for an otherwise unclassified non-zero CLI exit;
 - `worker-launch-failed` when the command cannot start;
+- `test-launch-failed` when an approved test executable cannot start;
 - `test-timeout` for timed-out executor-run tests;
 - `provider-unreachable` only for recognized connection, authentication,
   rate-limit, unavailable-service, or overload diagnostics.
@@ -73,6 +79,10 @@ crashes. The post-run provider fingerprint is checked even after any worker
 escalation. When an out-of-scope change and provider mutation happen together,
 `path-scope-exceeded` remains the primary reason and the provider mutation is
 retained in the summary.
+
+Run-record write failures return `evidence-write-failed` to the CLI rather
+than escaping as an uncaught filesystem exception. The executor does not retry
+the worker when a test executable is missing.
 
 ## Executor-run test environment
 

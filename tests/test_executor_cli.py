@@ -22,8 +22,10 @@ from unittest.mock import patch
 
 from claude_worker_router.config import RouterConfig
 from claude_worker_router.executor import execute_task
+from claude_worker_router.executor import run_test_command
 from claude_worker_router.git_workspace import GitWorkspace
 from claude_worker_router.models import RunMode, RunResult, TaskRequest, TestCommand
+from claude_worker_router.provider import ProviderConfigError
 from tests.helpers import _git, init_repository
 
 
@@ -111,6 +113,9 @@ class ExecutorCliTests(unittest.TestCase):
         test_commands: tuple[TestCommand, ...] | None = None,
         allowed_paths: tuple[str, ...] = ("example.txt",),
         timeout_seconds: float = 180,
+        worker_command: str | None = None,
+        run_records_blocked: bool = False,
+        allowed_test_binaries: tuple[str, ...] = ("uv",),
     ) -> FixtureRun:
         tmp = Path(tempfile.mkdtemp(prefix="executor-cli-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -126,6 +131,9 @@ class ExecutorCliTests(unittest.TestCase):
             test_commands=test_commands,
             allowed_paths=allowed_paths,
             timeout_seconds=timeout_seconds,
+            worker_command=worker_command,
+            run_records_blocked=run_records_blocked,
+            allowed_test_binaries=allowed_test_binaries,
         )
 
     def _run_executor_against(
@@ -138,6 +146,9 @@ class ExecutorCliTests(unittest.TestCase):
         test_commands: tuple[TestCommand, ...] | None = None,
         allowed_paths: tuple[str, ...] = ("example.txt",),
         timeout_seconds: float = 180,
+        worker_command: str | None = None,
+        run_records_blocked: bool = False,
+        allowed_test_binaries: tuple[str, ...] = ("uv",),
     ) -> FixtureRun:
         """Drive ``execute_task`` against an arbitrary pre-seeded repository.
 
@@ -177,16 +188,20 @@ class ExecutorCliTests(unittest.TestCase):
                 "PATH": path_extensions,
             }
         ):
+            run_records = tmp / "runs"
+            if run_records_blocked:
+                run_records.write_text("not a directory\n", encoding="utf-8")
+
             config = RouterConfig(
-                command=str(fake_executable),
+                command=worker_command or str(fake_executable),
                 provider="cc-switch-current",
                 max_turns=5,
                 timeout_seconds=timeout_seconds,
                 correction_limit=1,
                 max_changed_files=5,
                 max_diff_lines=500,
-                allowed_test_binaries=("uv",),
-                run_records=tmp / "runs",
+                allowed_test_binaries=allowed_test_binaries,
+                run_records=run_records,
                 test_output_limit_bytes=65536,
                 claude_settings=settings_path,
             )
@@ -251,6 +266,28 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertNotIn("--model", argv)
         self.assertNotIn("fix the fixture", " ".join(argv))
         self.assertEqual(fixture.result.status, "ready-for-review")
+
+    def test_missing_worker_command_fails_before_worktree_creation(self) -> None:
+        fixture = self.run_fixture(
+            worker_command="/definitely/missing/claude-worker-router-test",
+        )
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-launch-failed")
+        self.assertIsNone(fixture.result.worktree)
+        self.assertIsNone(fixture.result.branch)
+
+    def test_invalid_provider_config_fails_before_worktree_creation(self) -> None:
+        with patch(
+            "claude_worker_router.executor.read_provider_snapshot",
+            side_effect=ProviderConfigError("invalid provider settings"),
+        ):
+            fixture = self.run_fixture()
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "provider-config-error")
+        self.assertIsNone(fixture.result.worktree)
+        self.assertIsNone(fixture.result.branch)
 
     def test_read_only_mode_exposes_no_edit_tools_and_never_mutates_repository(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="executor-cli-read-only-"))
@@ -486,6 +523,44 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "test-timeout")
         self.assertEqual(fixture.result.tests[0]["timeout"], True)
+
+    def test_missing_allowed_test_binary_returns_structured_result(self) -> None:
+        try:
+            result = run_test_command(
+                TestCommand(argv=("definitely-missing-test-binary",)),
+                self._env_root,
+                timeout=5,
+                output_limit=1024,
+            )
+        except OSError as exc:
+            self.fail(f"test launch escaped as OSError: {exc}")
+
+        self.assertEqual(result["exit_code"], 127)
+        self.assertEqual(result["error"], "test-launch-failed")
+        self.assertEqual(result["timeout"], False)
+
+    def test_missing_test_binary_escalates_without_worker_retry(self) -> None:
+        missing_binary = "definitely-missing-test-binary"
+        try:
+            fixture = self.run_fixture(
+                test_commands=(TestCommand(argv=(missing_binary,)),),
+                allowed_test_binaries=("uv", missing_binary),
+            )
+        except OSError as exc:
+            self.fail(f"test launch escaped as OSError: {exc}")
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "test-launch-failed")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_evidence_write_failure_returns_structured_result(self) -> None:
+        try:
+            fixture = self.run_fixture(run_records_blocked=True)
+        except OSError as exc:
+            self.fail(f"evidence write escaped as OSError: {exc}")
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "evidence-write-failed")
 
     def test_worktree_creation_failure_is_structured(self) -> None:
         error = subprocess.CalledProcessError(1, ["git", "worktree", "add"])

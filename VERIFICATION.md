@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **40 tests, all PASS**.
+Result: **45 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -70,17 +70,20 @@ compatibility warning without a valid result is classified as
 `worker-output-invalid`, not as a provider outage. Direct in-process request
 construction cannot bypass path normalization, and path-scope violations stay
 the primary audit reason when a provider change is detected in the same run.
+Preflight tests also prove that missing worker commands and invalid provider
+configuration stop before worktree creation; missing test executables and
+unwritable run-record locations return structured results instead of crashing.
 
 ## Live Read-Only Run
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `d5e3b6194a3441a2bacd980f6311c984`                                  |
+| Run identifier      | `529b56c0c572479b92f59011be633bc5`                                  |
 | Status              | `read-only`                                                          |
 | Attempts            | 1                                                                    |
 | Commit              | none                                                                 |
 | Executor-run tests  | none                                                                 |
-| Run record          | `/Users/sandro/.codex/model-router/runs/d5e3b6194a3441a2bacd980f6311c984` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/529b56c0c572479b92f59011be633bc5` |
 
 The task repository hash was identical before and after the call. The Claude
 session used only `Glob` and `Read`; no `Edit`, `Write`, or `Bash` call was
@@ -90,14 +93,14 @@ made.
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `ff684cd3fee94e2aa33041d3f3a08bed`                                  |
+| Run identifier      | `bd03173129f948b3b85e2c2ec77ba7a2`                                  |
 | Status              | `ready-for-review`                                                  |
 | Attempts            | 1                                                                   |
 | Changed files       | `discount.py`                                                       |
 | Diff lines          | 2                                                                   |
-| Worker commit       | `224174c6589c0491c187b5cf21cd7f7362205d49`                         |
-| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.nhOBBKBbgl` |
-| Run record          | `/Users/sandro/.codex/model-router/runs/ff684cd3fee94e2aa33041d3f3a08bed` |
+| Worker commit       | `baa39147791d30fad7103f5a6197093e139434a6`                         |
+| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.DdWXwRwd6Z` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/bd03173129f948b3b85e2c2ec77ba7a2` |
 
 ## Main-Checkout Isolation Proof
 

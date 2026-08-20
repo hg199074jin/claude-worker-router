@@ -74,6 +74,9 @@ Codex remains the owner of the work.
 - The worker does not run tests, Git commands, version discovery, or inspect
   run records outside its working directory. The Python executor runs tests
   and Git; Codex inspects global configuration and retained evidence.
+- The executor checks the Claude command and provider configuration before
+  creating an edit worktree, so local setup failures do not leave unused
+  branches behind.
 - Executor-run tests receive only a small non-secret environment allowlist.
   Tasks whose tests require credentials or sensitive host access stay with
   Codex under the hard security gate.
@@ -84,8 +87,9 @@ Codex remains the owner of the work.
   user direction.
 - Treat `worker-permission-denied`, `worker-turn-limit`, `worker-timeout`,
   `worker-output-invalid`, `worker-cli-failed`, `git-measure-failed`,
-  `test-timeout`, and path-scope failures as distinct takeover reasons. Do not
-  retry them as generic provider failures.
+  `test-launch-failed`, `test-timeout`, `evidence-write-failed`, and path-scope
+  failures as distinct takeover reasons. Do not retry them as generic provider
+  failures.
 
 ## Per-task overrides
 
