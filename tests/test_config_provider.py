@@ -70,5 +70,34 @@ allowed_test_binaries = ["uv", "python3", "npm"]
                     TaskRequest.from_dict(data)
 
 
+from claude_worker_router.provider import fingerprint_provider, read_provider_snapshot
+
+
+class ProviderTests(unittest.TestCase):
+    def test_provider_snapshot_omits_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "ANTHROPIC_AUTH_TOKEN": "secret-value",
+                            "ANTHROPIC_BASE_URL": "https://api.example.test/anthropic",
+                            "ANTHROPIC_MODEL": "Example-Model",
+                            "ANTHROPIC_DEFAULT_SONNET_MODEL": "Example-Model",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            snapshot = read_provider_snapshot(path)
+            serialized = json.dumps(snapshot.as_dict(), sort_keys=True)
+            self.assertEqual(snapshot.endpoint_host, "api.example.test")
+            self.assertEqual(snapshot.model, "Example-Model")
+            self.assertNotIn("secret-value", serialized)
+            self.assertNotIn("AUTH_TOKEN", serialized)
+            self.assertEqual(fingerprint_provider(snapshot), fingerprint_provider(snapshot))
+
+
 if __name__ == "__main__":
     unittest.main()
