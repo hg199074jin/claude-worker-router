@@ -1,0 +1,3 @@
+interface:
+  display_name: "Claude Worker Router"
+  short_description: "Route coding work between Codex and a provider-neutral Claude Code worker"
