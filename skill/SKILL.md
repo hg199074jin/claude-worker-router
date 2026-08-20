@@ -79,7 +79,8 @@ Codex remains the owner of the work.
   and Git; Codex inspects global configuration and retained evidence.
 - The executor checks the Claude command and provider configuration before
   creating an edit worktree, so local setup failures do not leave unused
-  branches behind.
+  branches behind. Configure the command as a bare executable name such as
+  `claude` or as an absolute path, never as a relative path containing `/`.
 - Executor-run tests receive only a small non-secret environment allowlist.
   Tasks whose tests require credentials or sensitive host access stay with
   Codex under the hard security gate.

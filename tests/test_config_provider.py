@@ -31,6 +31,29 @@ allowed_test_binaries = ["uv", "python3", "npm"]
             self.assertEqual(config.max_turns, 12)
             self.assertEqual(config.correction_limit, 1)
 
+    def test_rejects_relative_worker_command_with_path_separator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+[worker]
+command = "./tools/claude"
+provider = "cc-switch-current"
+max_turns = 12
+timeout_seconds = 1200
+correction_limit = 1
+max_changed_files = 5
+max_diff_lines = 500
+allowed_test_binaries = ["uv"]
+""".strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "bare executable name or an absolute path",
+            ):
+                load_config(path)
+
     def test_rejects_missing_task_statement(self):
         with self.assertRaisesRegex(ValueError, "task must be non-empty"):
             TaskRequest.from_dict(

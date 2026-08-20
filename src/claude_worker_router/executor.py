@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -138,13 +138,16 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         )
         return _finish_result(config, run_id, request, result)
 
-    if shutil.which(config.command) is None:
+    resolved_worker_command = _resolve_worker_command(config.command)
+    if resolved_worker_command is None:
         _set_escalation(
             result,
             "worker-launch-failed",
-            f"worker command is not executable or was not found: {config.command}",
+            "worker command must be a bare executable name or absolute path "
+            f"and must be executable: {config.command}",
         )
         return _finish_result(config, run_id, request, result)
+    config = replace(config, command=resolved_worker_command)
 
     try:
         before_snapshot = read_provider_snapshot(config.claude_settings)
@@ -647,6 +650,13 @@ def _is_git_repo(path: Path) -> bool:
 
 def _new_run_id() -> str:
     return uuid.uuid4().hex
+
+
+def _resolve_worker_command(command: str) -> str | None:
+    if "/" in command and not Path(command).is_absolute():
+        return None
+    resolved = shutil.which(command)
+    return str(Path(resolved).resolve()) if resolved else None
 
 
 def _short_task(task: str) -> str:

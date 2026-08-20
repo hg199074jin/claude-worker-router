@@ -279,6 +279,14 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertIsNone(fixture.result.worktree)
         self.assertIsNone(fixture.result.branch)
 
+    def test_relative_worker_command_path_is_rejected_without_worktree(self) -> None:
+        fixture = self.run_fixture(worker_command="./tools/claude")
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-launch-failed")
+        self.assertIn("bare executable name or absolute path", fixture.result.summary)
+        self.assertIsNone(fixture.result.worktree)
+
     def test_disallowed_test_binary_fails_before_worker_and_worktree(self) -> None:
         fixture = self.run_fixture(
             test_commands=(TestCommand(argv=("python3", "-c", "pass")),),

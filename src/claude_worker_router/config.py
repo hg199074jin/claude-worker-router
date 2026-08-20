@@ -41,6 +41,10 @@ def load_config(path: Path) -> RouterConfig:
     command = worker["command"]
     if not isinstance(command, str) or not command:
         raise ValueError("worker.command must be a non-empty string")
+    if "/" in command and not Path(command).is_absolute():
+        raise ValueError(
+            "worker.command must be a bare executable name or an absolute path"
+        )
 
     provider = worker["provider"]
     if not isinstance(provider, str) or provider not in _PROVIDER_MODES:

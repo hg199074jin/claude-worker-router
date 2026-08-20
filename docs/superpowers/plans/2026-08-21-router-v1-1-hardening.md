@@ -125,6 +125,8 @@
 
 - [ ] Verify the configured Claude executable and provider settings before
   creating an edit worktree.
+- [ ] Resolve the worker executable once and reject ambiguous relative command
+  paths so preflight and invocation use the same file.
 - [ ] Return `test-launch-failed` without retrying the worker when an approved
   test executable is unavailable.
 - [ ] Require edit requests to contain tests, reject tests in read-only mode,

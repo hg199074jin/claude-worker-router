@@ -27,7 +27,10 @@ come from the current CC Switch configuration; the executor never passes
 Before creating an edit worktree, the executor verifies that the configured
 Claude command is executable and that the current provider settings can be
 parsed. Preflight failures return structured evidence without creating an
-unused branch or worktree.
+unused branch or worktree. The command must be either a bare executable name
+resolved from `PATH` or an absolute path; relative paths containing `/` are
+rejected because their meaning changes with the worker current directory. The
+resolved absolute executable is used for the actual invocation.
 
 Edit runs use `acceptEdits` and expose plus pre-approve only
 `Read,Glob,Grep,Edit,Write`. Read-only runs use `dontAsk` and expose plus
