@@ -51,7 +51,8 @@ change still escalates the result.
 Edit mode continues to require a clean Git repository and an isolated sibling
 worktree. `allowed_paths` is an enforced set of repository-relative path
 prefixes, not prompt-only guidance. Edit requests must declare at least one
-allowed path and at least one approved test command. Absolute paths, empty
+allowed path and at least one approved, non-empty test argv. Both JSON parsing
+and direct `TestCommand` construction enforce the argv invariant. Absolute paths, empty
 components, `.`, and `..` segments are
 rejected during request validation. Changes are measured even when the worker
 or tests fail; any changed path outside the declared scope takes precedence as

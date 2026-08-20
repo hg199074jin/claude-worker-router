@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from claude_worker_router.config import load_config
-from claude_worker_router.models import RunMode, TaskRequest
+from claude_worker_router.models import RunMode, TaskRequest, TestCommand
 
 
 class ConfigTests(unittest.TestCase):
@@ -78,6 +78,12 @@ allowed_test_binaries = ["uv"]
             }
         )
         self.assertEqual(request.test_commands[0].argv[0], "uv")
+
+    def test_direct_test_command_cannot_bypass_argv_validation(self):
+        for unsafe_argv in ((), ("",), ("uv", "")):
+            with self.subTest(unsafe_argv=unsafe_argv):
+                with self.assertRaisesRegex(ValueError, "non-empty argv array"):
+                    TestCommand(argv=unsafe_argv)
 
     def test_edit_request_requires_at_least_one_allowed_path(self):
         with self.assertRaisesRegex(ValueError, "edit mode requires allowed_paths"):

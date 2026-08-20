@@ -13,6 +13,12 @@ class RunMode(StrEnum):
 class TestCommand:
     argv: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if not self.argv or not all(
+            isinstance(item, str) and item for item in self.argv
+        ):
+            raise ValueError("each test command must be a non-empty argv array")
+
     @classmethod
     def from_value(cls, value: Any) -> "TestCommand":
         if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):

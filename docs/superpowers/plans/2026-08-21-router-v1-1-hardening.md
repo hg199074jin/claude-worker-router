@@ -131,6 +131,8 @@
   test executable is unavailable.
 - [ ] Require edit requests to contain tests, reject tests in read-only mode,
   and reject disallowed test binaries before invoking the worker.
+- [ ] Apply non-empty argv validation to direct `TestCommand` construction as
+  well as JSON parsing.
 - [ ] Return `evidence-write-failed` when the run-record directory cannot be
   written, while still emitting the result to the caller.
 - [ ] Re-run deterministic, skill, live-provider, and clean-tree verification.

@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **50 tests, all PASS**.
+Result: **51 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -78,6 +78,8 @@ test binaries outside the allowlist are rejected before consuming a worker
 call.
 Relative worker command paths are rejected, and the executable resolved during
 preflight is the same absolute file used for the worker invocation.
+Direct `TestCommand` construction applies the same non-empty argv validation as
+JSON request parsing, so internal callers cannot bypass the preflight contract.
 
 ## Live Read-Only Run
 
