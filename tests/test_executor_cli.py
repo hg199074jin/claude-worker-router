@@ -213,6 +213,8 @@ class ExecutorCliTests(unittest.TestCase):
                 mode=RunMode(mode),
                 test_commands=test_commands
                 if test_commands is not None
+                else ()
+                if mode == "read-only"
                 else (
                     TestCommand(argv=("uv", "run", "python", "-m", "unittest")),
                 ),
@@ -276,6 +278,18 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertEqual(fixture.result.escalation_reason, "worker-launch-failed")
         self.assertIsNone(fixture.result.worktree)
         self.assertIsNone(fixture.result.branch)
+
+    def test_disallowed_test_binary_fails_before_worker_and_worktree(self) -> None:
+        fixture = self.run_fixture(
+            test_commands=(TestCommand(argv=("python3", "-c", "pass")),),
+            allowed_test_binaries=("uv",),
+        )
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "test-binary-not-allowed")
+        self.assertEqual(fixture.result.attempts, 0)
+        self.assertEqual(fixture.claude_invocation_count, 0)
+        self.assertIsNone(fixture.result.worktree)
 
     def test_invalid_provider_config_fails_before_worktree_creation(self) -> None:
         with patch(

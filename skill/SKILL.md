@@ -59,6 +59,8 @@ Codex remains the owner of the work.
   block delegation.
 - Every edit request must declare at least one repository-relative
   `allowed_paths` prefix. Never use an empty list as an unrestricted scope.
+- Every edit request must include at least one approved project-local test
+  command. Read-only requests include no test commands.
 - After this skill is installed, never bypass the executor with a direct
   implementation call to `claude -p`. All delegated implementation and
   analysis requests go through `scripts/run_worker.py` so the permission,
@@ -70,7 +72,8 @@ Codex remains the owner of the work.
   Glob, and Grep; never expose Edit or Write.
 - Supply test commands as argv arrays, and only after Codex has verified
   those commands are project-local tests. Do not pass commands Codex has
-  not confirmed.
+  not confirmed; binaries outside the configured allowlist are rejected before
+  the worker is called.
 - The worker does not run tests, Git commands, version discovery, or inspect
   run records outside its working directory. The Python executor runs tests
   and Git; Codex inspects global configuration and retained evidence.

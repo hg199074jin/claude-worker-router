@@ -39,15 +39,17 @@ to locate and read applicable `AGENTS.md` and `CLAUDE.md` files before acting.
 
 Read-only mode runs in the requested directory without creating a worktree,
 cannot receive file-edit tools, does not run project tests, does not create a
-commit, and returns status `read-only` after a valid worker response. A provider
-fingerprint change still escalates the result.
+commit, rejects test commands that would otherwise be silently ignored, and
+returns status `read-only` after a valid worker response. A provider fingerprint
+change still escalates the result.
 
 ## Edit scope and integration
 
 Edit mode continues to require a clean Git repository and an isolated sibling
 worktree. `allowed_paths` is an enforced set of repository-relative path
 prefixes, not prompt-only guidance. Edit requests must declare at least one
-allowed path. Absolute paths, empty components, `.`, and `..` segments are
+allowed path and at least one approved test command. Absolute paths, empty
+components, `.`, and `..` segments are
 rejected during request validation. Changes are measured even when the worker
 or tests fail; any changed path outside the declared scope takes precedence as
 `path-scope-exceeded` and is never committed. Both JSON parsing and direct
@@ -82,7 +84,9 @@ retained in the summary.
 
 Run-record write failures return `evidence-write-failed` to the CLI rather
 than escaping as an uncaught filesystem exception. The executor does not retry
-the worker when a test executable is missing.
+the worker when a test executable is missing. A test binary outside the
+configured allowlist returns `test-binary-not-allowed` before any worker call
+or worktree creation.
 
 ## Executor-run test environment
 

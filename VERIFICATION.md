@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **45 tests, all PASS**.
+Result: **48 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -73,6 +73,9 @@ the primary audit reason when a provider change is detected in the same run.
 Preflight tests also prove that missing worker commands and invalid provider
 configuration stop before worktree creation; missing test executables and
 unwritable run-record locations return structured results instead of crashing.
+Edit requests without tests, read-only requests containing ignored tests, and
+test binaries outside the allowlist are rejected before consuming a worker
+call.
 
 ## Live Read-Only Run
 

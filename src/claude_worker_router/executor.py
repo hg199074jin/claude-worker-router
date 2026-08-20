@@ -122,6 +122,22 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     result = RunResult(run_id=run_id, status="escalated")
     result.provider = {"endpoint_host": "", "model": ""}
 
+    disallowed_test_binaries = sorted(
+        {
+            command.argv[0]
+            for command in request.test_commands
+            if command.argv[0] not in config.allowed_test_binaries
+        }
+    )
+    if disallowed_test_binaries:
+        _set_escalation(
+            result,
+            "test-binary-not-allowed",
+            "test binaries are not in the allowlist: "
+            + ", ".join(disallowed_test_binaries),
+        )
+        return _finish_result(config, run_id, request, result)
+
     if shutil.which(config.command) is None:
         _set_escalation(
             result,

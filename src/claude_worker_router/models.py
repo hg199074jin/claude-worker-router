@@ -36,6 +36,10 @@ class TaskRequest:
         object.__setattr__(self, "allowed_paths", normalized_paths)
         if self.mode == RunMode.EDIT and not normalized_paths:
             raise ValueError("edit mode requires allowed_paths")
+        if self.mode == RunMode.EDIT and not self.test_commands:
+            raise ValueError("edit mode requires test_commands")
+        if self.mode == RunMode.READ_ONLY and self.test_commands:
+            raise ValueError("read-only mode does not accept test_commands")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskRequest":

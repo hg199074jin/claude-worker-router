@@ -127,6 +127,8 @@
   creating an edit worktree.
 - [ ] Return `test-launch-failed` without retrying the worker when an approved
   test executable is unavailable.
+- [ ] Require edit requests to contain tests, reject tests in read-only mode,
+  and reject disallowed test binaries before invoking the worker.
 - [ ] Return `evidence-write-failed` when the run-record directory cannot be
   written, while still emitting the result to the caller.
 - [ ] Re-run deterministic, skill, live-provider, and clean-tree verification.

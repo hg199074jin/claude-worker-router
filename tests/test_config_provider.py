@@ -69,6 +69,19 @@ allowed_test_binaries = ["uv", "python3", "npm"]
                 }
             )
 
+    def test_edit_request_requires_at_least_one_test_command(self):
+        with self.assertRaisesRegex(ValueError, "edit mode requires test_commands"):
+            TaskRequest.from_dict(
+                {
+                    "repository": "/tmp/example",
+                    "task": "fix the parser",
+                    "acceptance_criteria": ["tests pass"],
+                    "mode": "edit",
+                    "test_commands": [],
+                    "allowed_paths": ["src"],
+                }
+            )
+
     def test_read_only_request_allows_empty_allowed_paths(self):
         request = TaskRequest.from_dict(
             {
@@ -81,6 +94,19 @@ allowed_test_binaries = ["uv", "python3", "npm"]
             }
         )
         self.assertEqual(request.allowed_paths, ())
+
+    def test_read_only_request_rejects_ignored_test_commands(self):
+        with self.assertRaisesRegex(ValueError, "read-only mode does not accept"):
+            TaskRequest.from_dict(
+                {
+                    "repository": "/tmp/example",
+                    "task": "review the parser",
+                    "acceptance_criteria": [],
+                    "mode": "read-only",
+                    "test_commands": [["uv", "run", "python", "-m", "unittest"]],
+                    "allowed_paths": [],
+                }
+            )
 
     def test_direct_task_request_cannot_bypass_path_normalization(self):
         for unsafe_path in ("", "src//file.py", "src/./file.py", "../outside.py"):
