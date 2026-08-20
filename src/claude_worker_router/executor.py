@@ -43,7 +43,7 @@ class _WorkerLoopResult:
     attempts: int
     tests: list[dict[str, Any]]
     summary: str
-    worker_failed: bool
+    escalation_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -60,15 +60,24 @@ def run_test_command(
 ) -> dict[str, Any]:
     """Run a single test argv array with ``shell=False`` and bounded capture."""
     argv = list(command.argv)
-    proc = subprocess.run(
-        argv,
-        cwd=str(cwd),
-        shell=False,
-        check=False,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            shell=False,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "argv": argv,
+            "exit_code": 124,
+            "stdout": _truncate(_timeout_text(exc.stdout), output_limit),
+            "stderr": _truncate(_timeout_text(exc.stderr), output_limit),
+            "timeout": True,
+        }
     return {
         "argv": argv,
         "exit_code": proc.returncode,
@@ -113,8 +122,8 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     result.tests = loop_result.tests
     last_summary = loop_result.summary
 
-    if loop_result.worker_failed:
-        _set_escalation(result, "provider-unreachable", last_summary)
+    if loop_result.escalation_reason is not None:
+        _set_escalation(result, loop_result.escalation_reason, last_summary)
         _write_records(config, run_id, request, result)
         return result
 
@@ -157,10 +166,12 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         and result.status == "ready-for-review"
         and result.changed_files
     ):
-        commit_sha = workspace.commit_worker_change(
-            f"codex-worker: {_short_task(request.task)}"
-        )
-        result.commit = commit_sha
+        try:
+            result.commit = workspace.commit_worker_change(
+                f"codex-worker: {_short_task(request.task)}"
+            )
+        except (subprocess.CalledProcessError, OSError) as exc:
+            _set_escalation(result, "git-commit-failed", _subprocess_summary(exc))
 
     _write_records(config, run_id, request, result)
     return result
@@ -191,6 +202,9 @@ def _prepare_workspace(
     except DirtyCheckoutError as exc:
         _set_escalation(result, "dirty-checkout", str(exc))
         return None
+    except (subprocess.CalledProcessError, OSError) as exc:
+        _set_escalation(result, "worktree-failed", _subprocess_summary(exc))
+        return None
     result.worktree = str(workspace.path)
     result.branch = workspace.branch
     return workspace
@@ -213,12 +227,12 @@ def _run_worker_loop(
         outcome = _invoke_worker(config, prompt, cwd, request.mode)
         last_summary = outcome.summary
 
-        if outcome.status == "provider-unreachable":
+        if outcome.status != "ok":
             return _WorkerLoopResult(
                 attempts=attempts,
                 tests=tests,
                 summary=last_summary,
-                worker_failed=True,
+                escalation_reason=outcome.status,
             )
 
         if request.mode == RunMode.READ_ONLY:
@@ -226,16 +240,23 @@ def _run_worker_loop(
                 attempts=attempts,
                 tests=[],
                 summary=last_summary,
-                worker_failed=False,
+                escalation_reason=None,
             )
 
         tests = _run_all_tests(request.test_commands, cwd, config)
+        if any(t["timeout"] for t in tests):
+            return _WorkerLoopResult(
+                attempts=attempts,
+                tests=tests,
+                summary="an executor-run test timed out",
+                escalation_reason="test-timeout",
+            )
         if tests and all(t["exit_code"] == 0 for t in tests):
             return _WorkerLoopResult(
                 attempts=attempts,
                 tests=tests,
                 summary=last_summary,
-                worker_failed=False,
+                escalation_reason=None,
             )
 
         if attempts > config.correction_limit:
@@ -243,7 +264,7 @@ def _run_worker_loop(
                 attempts=attempts,
                 tests=tests,
                 summary=last_summary,
-                worker_failed=False,
+                escalation_reason=None,
             )
 
         prompt = _build_correction_prompt(
@@ -254,7 +275,7 @@ def _run_worker_loop(
         attempts=attempts,
         tests=tests,
         summary=last_summary,
-        worker_failed=False,
+        escalation_reason=None,
     )
 
 
@@ -291,25 +312,25 @@ def _invoke_worker(
         )
     except subprocess.TimeoutExpired as exc:
         return _WorkerOutcome(
-            status="provider-unreachable",
+            status="worker-timeout",
             summary=f"worker timed out after {exc.timeout} seconds",
         )
     except OSError as exc:
         return _WorkerOutcome(
-            status="provider-unreachable",
+            status="worker-launch-failed",
             summary=f"worker could not be launched: {exc}",
         )
 
     if proc.returncode != 0:
         return _WorkerOutcome(
-            status="provider-unreachable",
+            status=_classify_worker_failure(proc.stdout, proc.stderr),
             summary=_bounded_stderr(proc.stderr),
         )
 
     summary = _parse_worker_output(proc.stdout)
     if summary is None:
         return _WorkerOutcome(
-            status="provider-unreachable",
+            status="worker-output-invalid",
             summary="worker output was not a valid JSON object",
         )
 
@@ -472,6 +493,37 @@ def _truncate(text: str, limit: int) -> str:
 
 def _bounded_stderr(stderr: str | None) -> str:
     return _truncate(stderr or "", 200)
+
+
+def _classify_worker_failure(stdout: str | None, stderr: str | None) -> str:
+    diagnostic = f"{stdout or ''}\n{stderr or ''}".lower()
+    if "max_turns_reached" in diagnostic or "turn limit" in diagnostic:
+        return "worker-turn-limit"
+    permission_markers = (
+        "requested permissions",
+        "permission denied",
+        "requires approval",
+        "not granted",
+        "was blocked",
+    )
+    if any(marker in diagnostic for marker in permission_markers):
+        return "worker-permission-denied"
+    return "provider-unreachable"
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _subprocess_summary(exc: subprocess.CalledProcessError | OSError) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = _timeout_text(exc.stderr).strip()
+        return stderr or f"command failed with exit code {exc.returncode}"
+    return str(exc)
 
 
 def _detect_branch(cwd: Path) -> str | None:

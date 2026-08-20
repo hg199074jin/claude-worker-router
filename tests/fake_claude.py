@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -123,6 +124,18 @@ def main() -> int:
     if behavior == "provider-error":
         sys.stderr.write("connection refused\n")
         return 7
+    if behavior == "permission-denied":
+        sys.stderr.write("Claude requested permissions to write, but they were not granted\n")
+        return 1
+    if behavior == "turn-limit":
+        sys.stderr.write("max_turns_reached: turn limit exhausted\n")
+        return 1
+    if behavior == "worker-timeout":
+        time.sleep(0.25)
+        return 0
+    if behavior == "malformed-output":
+        sys.stdout.write("not-json")
+        return 0
 
     _maybe_modify_settings(behavior)
     _maybe_apply_edit(behavior, count, worktree)

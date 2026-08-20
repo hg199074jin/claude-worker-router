@@ -18,9 +18,11 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from unittest.mock import patch
 
 from claude_worker_router.config import RouterConfig
 from claude_worker_router.executor import execute_task
+from claude_worker_router.git_workspace import GitWorkspace
 from claude_worker_router.models import RunMode, RunResult, TaskRequest, TestCommand
 from tests.helpers import _git, init_repository
 
@@ -101,6 +103,9 @@ class ExecutorCliTests(unittest.TestCase):
         mode: str = "edit",
         fake_behavior: str = "fix",
         token: str = "irrelevant-token",
+        test_commands: tuple[TestCommand, ...] | None = None,
+        allowed_paths: tuple[str, ...] = (),
+        timeout_seconds: float = 180,
     ) -> FixtureRun:
         tmp = Path(tempfile.mkdtemp(prefix="executor-cli-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -113,6 +118,9 @@ class ExecutorCliTests(unittest.TestCase):
             mode=mode,
             fake_behavior=fake_behavior,
             token=token,
+            test_commands=test_commands,
+            allowed_paths=allowed_paths,
+            timeout_seconds=timeout_seconds,
         )
 
     def _run_executor_against(
@@ -124,6 +132,7 @@ class ExecutorCliTests(unittest.TestCase):
         token: str = "irrelevant-token",
         test_commands: tuple[TestCommand, ...] | None = None,
         allowed_paths: tuple[str, ...] = (),
+        timeout_seconds: float = 180,
     ) -> FixtureRun:
         """Drive ``execute_task`` against an arbitrary pre-seeded repository.
 
@@ -167,7 +176,7 @@ class ExecutorCliTests(unittest.TestCase):
                 command=str(fake_executable),
                 provider="cc-switch-current",
                 max_turns=5,
-                timeout_seconds=180,
+                timeout_seconds=timeout_seconds,
                 correction_limit=1,
                 max_changed_files=5,
                 max_diff_lines=500,
@@ -331,6 +340,69 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertEqual(fixture.result.attempts, 1)
         self.assertEqual(fixture.result.escalation_reason, "provider-unreachable")
         self.assertEqual(fixture.claude_invocation_count, 1)
+
+    def test_permission_denial_has_specific_escalation_reason(self) -> None:
+        fixture = self.run_fixture(fake_behavior="permission-denied")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-permission-denied")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_turn_limit_has_specific_escalation_reason(self) -> None:
+        fixture = self.run_fixture(fake_behavior="turn-limit")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-turn-limit")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_malformed_worker_output_has_specific_escalation_reason(self) -> None:
+        fixture = self.run_fixture(fake_behavior="malformed-output")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-output-invalid")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_worker_timeout_has_specific_escalation_reason(self) -> None:
+        fixture = self.run_fixture(
+            fake_behavior="worker-timeout",
+            timeout_seconds=0.05,
+        )
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-timeout")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_test_timeout_is_recorded_and_escalated(self) -> None:
+        fixture = self.run_fixture(
+            fake_behavior="fix",
+            timeout_seconds=1.0,
+            test_commands=(
+                TestCommand(
+                    argv=(
+                        "uv",
+                        "run",
+                        "python",
+                        "-c",
+                        "import time; time.sleep(1.5)",
+                    )
+                ),
+            ),
+        )
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "test-timeout")
+        self.assertEqual(fixture.result.tests[0]["timeout"], True)
+
+    def test_worktree_creation_failure_is_structured(self) -> None:
+        error = subprocess.CalledProcessError(1, ["git", "worktree", "add"])
+        with patch.object(GitWorkspace, "create", side_effect=error):
+            fixture = self.run_fixture(fake_behavior="fix")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worktree-failed")
+        self.assertEqual(fixture.claude_invocation_count, 0)
+
+    def test_commit_failure_is_structured(self) -> None:
+        error = subprocess.CalledProcessError(1, ["git", "commit"])
+        with patch.object(GitWorkspace, "commit_worker_change", side_effect=error):
+            fixture = self.run_fixture(fake_behavior="fix")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "git-commit-failed")
+        self.assertIsNone(fixture.result.commit)
 
     def test_result_files_do_not_contain_token(self) -> None:
         fixture = self.run_fixture(
