@@ -80,6 +80,13 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
 
     workspace = _prepare_workspace(request, run_id, result)
 
+    # ``_prepare_workspace`` escalates without returning a workspace when the
+    # edit target is unsafe: a dirty Git checkout or a non-Git directory. Stop
+    # here so the worker loop never runs against an unsafe target.
+    if workspace is None and result.escalation_reason is not None:
+        _write_records(config, run_id, request, result)
+        return result
+
     try:
         before_snapshot = read_provider_snapshot(config.claude_settings)
     except ProviderConfigError as exc:
@@ -156,8 +163,11 @@ def _prepare_workspace(
         return None
 
     if not _is_git_repo(request.repository):
-        result.worktree = str(request.repository)
-        result.branch = _detect_branch(request.repository)
+        _set_escalation(
+            result,
+            "non-git-edit-disabled",
+            "edit mode requires a Git repository",
+        )
         return None
 
     try:

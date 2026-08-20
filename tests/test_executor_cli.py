@@ -107,6 +107,28 @@ class ExecutorCliTests(unittest.TestCase):
 
         repository = _init_fixture_repository(tmp / WORKTEE_REPO_NAME)
 
+        return self._run_executor_against(
+            tmp,
+            repository,
+            mode=mode,
+            fake_behavior=fake_behavior,
+            token=token,
+        )
+
+    def _run_executor_against(
+        self,
+        tmp: Path,
+        repository: Path,
+        mode: str = "edit",
+        fake_behavior: str = "fix",
+        token: str = "irrelevant-token",
+    ) -> FixtureRun:
+        """Drive ``execute_task`` against an arbitrary pre-seeded repository.
+
+        Tests that need the main checkout to be dirty, or the repository to be
+        a plain non-Git directory, build their own ``repository`` and call this
+        helper instead of going through ``run_fixture``.
+        """
         fake_executable = tmp / "fake-claude.py"
         shutil.copyfile(FAKE_CLAUDE_SOURCE, fake_executable)
         fake_executable.chmod(0o755)
@@ -244,6 +266,60 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertTrue(fixture.record_paths, "expected record files to be written")
         for path in fixture.record_paths:
             self.assertNotIn("top-secret-token", path.read_text(encoding="utf-8"))
+
+    def test_dirty_checkout_escalates_without_running_worker(self) -> None:
+        """A dirty main checkout in edit mode must escalate and never invoke Claude.
+
+        The previous implementation set ``escalation_reason="dirty-checkout"`` but
+        still proceeded to run the worker against ``request.repository``, which
+        meant a fake-Claude (and, in production, a real Claude) edit would land
+        on the dirty main checkout.
+        """
+        tmp = Path(tempfile.mkdtemp(prefix="executor-cli-dirty-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+
+        repository = _init_fixture_repository(tmp / WORKTEE_REPO_NAME)
+        # Introduce an uncommitted change so ``GitWorkspace.create`` raises
+        # ``DirtyCheckoutError`` during workspace preparation.
+        (repository / "example.txt").write_text("dirty\n", encoding="utf-8")
+
+        fixture = self._run_executor_against(
+            tmp, repository, mode="edit", fake_behavior="fix"
+        )
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "dirty-checkout")
+        self.assertEqual(fixture.claude_invocation_count, 0)
+        # The dirty main checkout must remain untouched.
+        self.assertEqual(
+            (repository / "example.txt").read_text(encoding="utf-8"),
+            "dirty\n",
+        )
+
+    def test_non_git_edit_request_escalates_without_running_worker(self) -> None:
+        """An edit request against a non-Git directory must escalate.
+
+        Only read-only operation is permitted against a non-Git target. The
+        executor must not run the worker (or write evidence of a worker run)
+        for an edit request that points at a plain directory.
+        """
+        tmp = Path(tempfile.mkdtemp(prefix="executor-cli-nongit-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+
+        # A plain directory with no Git history. The fake Claude would happily
+        # create ``example.txt`` here if it were invoked, which is exactly the
+        # outcome we are guarding against.
+        repository = tmp / "plain-dir"
+        repository.mkdir(parents=True)
+
+        fixture = self._run_executor_against(
+            tmp, repository, mode="edit", fake_behavior="fix"
+        )
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(
+            fixture.result.escalation_reason, "non-git-edit-disabled"
+        )
+        self.assertEqual(fixture.claude_invocation_count, 0)
+        self.assertFalse((repository / "example.txt").exists())
 
 
 def _init_fixture_repository(repository: Path) -> Path:
