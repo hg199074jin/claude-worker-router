@@ -45,7 +45,8 @@ prefixes, not prompt-only guidance. Edit requests must declare at least one
 allowed path. Absolute paths, empty components, `.`, and `..` segments are
 rejected during request validation. Changes are measured even when the worker
 or tests fail; any changed path outside the declared scope takes precedence as
-`path-scope-exceeded` and is never committed.
+`path-scope-exceeded` and is never committed. Both JSON parsing and direct
+in-process `TaskRequest` construction apply the same path normalization.
 
 An edit with passing tests and no changed files returns `ready-for-review` with
 `commit = null`; it does not attempt an empty Git commit. The worktree and run
@@ -69,7 +70,9 @@ provider outage:
 Worktree creation, change measurement, and Git commit failures also become
 structured escalations with retained evidence rather than uncaught CLI
 crashes. The post-run provider fingerprint is checked even after any worker
-escalation.
+escalation. When an out-of-scope change and provider mutation happen together,
+`path-scope-exceeded` remains the primary reason and the provider mutation is
+retained in the summary.
 
 ## Executor-run test environment
 

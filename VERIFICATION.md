@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **38 tests, all PASS**.
+Result: **40 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -67,7 +67,9 @@ classification, post-failure provider fingerprint checks, test timeouts, empty
 commits, Python cache suppression, minimal test environments, and structured
 Git measurement failures. It also verifies that a third-party model
 compatibility warning without a valid result is classified as
-`worker-output-invalid`, not as a provider outage.
+`worker-output-invalid`, not as a provider outage. Direct in-process request
+construction cannot bypass path normalization, and path-scope violations stay
+the primary audit reason when a provider change is detected in the same run.
 
 ## Live Read-Only Run
 

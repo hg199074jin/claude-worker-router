@@ -108,7 +108,8 @@
 - Modify: `tests/fake_claude.py`
 
 - [ ] Require a non-empty `allowed_paths` list for every edit request and
-  reject raw empty or dot path components before normalization.
+  reject raw empty or dot path components before normalization, including for
+  direct in-process request construction.
 - [ ] Measure edit scope and re-check the provider fingerprint after failed
   worker or test outcomes, not only after successful runs.
 - [ ] Convert Git measurement failures into retained structured evidence.
@@ -116,4 +117,6 @@
   no Python bytecode cache generation.
 - [ ] Distinguish known provider failures, invalid third-party-model output,
   and unknown non-zero Claude CLI failures.
+- [ ] Preserve path-scope violations as the primary reason when a provider
+  mutation is detected in the same run.
 - [ ] Re-run the full deterministic suite and live read-only/edit acceptance.

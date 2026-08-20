@@ -411,6 +411,16 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "provider-configuration-changed")
 
+    def test_path_scope_remains_primary_when_provider_also_changes(self) -> None:
+        fixture = self.run_fixture(
+            mode="edit",
+            fake_behavior="outside-and-provider-change",
+            allowed_paths=("example.txt",),
+        )
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "path-scope-exceeded")
+        self.assertIn("provider configuration also changed", fixture.result.summary)
+
     def test_provider_failure_does_not_try_another_profile(self) -> None:
         fixture = self.run_fixture(mode="edit", fake_behavior="provider-error")
         self.assertEqual(fixture.result.status, "escalated")

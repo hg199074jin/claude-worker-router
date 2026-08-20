@@ -170,12 +170,18 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         after_snapshot = read_provider_snapshot(config.claude_settings)
         after_fingerprint = fingerprint_provider(after_snapshot)
     except ProviderConfigError as exc:
-        _set_escalation(result, "provider-config-error", str(exc))
+        if result.escalation_reason == "path-scope-exceeded":
+            _append_summary(result, f"provider configuration check also failed: {exc}")
+        else:
+            _set_escalation(result, "provider-config-error", str(exc))
         _write_records(config, run_id, request, result)
         return result
 
     if after_fingerprint != before_fingerprint:
-        _set_escalation(result, "provider-configuration-changed", last_summary)
+        if result.escalation_reason == "path-scope-exceeded":
+            _append_summary(result, "provider configuration also changed")
+        else:
+            _set_escalation(result, "provider-configuration-changed", last_summary)
         _write_records(config, run_id, request, result)
         return result
 
@@ -478,6 +484,10 @@ def _set_escalation(result: RunResult, reason: str, summary: str) -> None:
     result.status = "escalated"
     result.escalation_reason = reason
     result.summary = summary
+
+
+def _append_summary(result: RunResult, detail: str) -> None:
+    result.summary = f"{result.summary}; {detail}" if result.summary else detail
 
 
 def _write_records(

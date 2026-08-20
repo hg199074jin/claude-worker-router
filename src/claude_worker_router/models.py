@@ -30,7 +30,11 @@ class TaskRequest:
     allowed_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.mode == RunMode.EDIT and not self.allowed_paths:
+        normalized_paths = tuple(
+            _normalize_allowed_path(path) for path in self.allowed_paths
+        )
+        object.__setattr__(self, "allowed_paths", normalized_paths)
+        if self.mode == RunMode.EDIT and not normalized_paths:
             raise ValueError("edit mode requires allowed_paths")
 
     @classmethod

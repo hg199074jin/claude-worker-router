@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from claude_worker_router.config import load_config
-from claude_worker_router.models import TaskRequest
+from claude_worker_router.models import RunMode, TaskRequest
 
 
 class ConfigTests(unittest.TestCase):
@@ -81,6 +81,19 @@ allowed_test_binaries = ["uv", "python3", "npm"]
             }
         )
         self.assertEqual(request.allowed_paths, ())
+
+    def test_direct_task_request_cannot_bypass_path_normalization(self):
+        for unsafe_path in ("", "src//file.py", "src/./file.py", "../outside.py"):
+            with self.subTest(unsafe_path=unsafe_path):
+                with self.assertRaisesRegex(ValueError, "allowed_paths"):
+                    TaskRequest(
+                        repository=Path("/tmp/example"),
+                        task="fix the parser",
+                        acceptance_criteria=(),
+                        mode=RunMode.EDIT,
+                        test_commands=(),
+                        allowed_paths=(unsafe_path,),
+                    )
 
     def test_rejects_provider_override_fields(self):
         for forbidden in ("provider_profile", "settings", "model"):
