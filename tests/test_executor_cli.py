@@ -32,11 +32,14 @@ WORKTEE_REPO_NAME = "fixture-repo"
 ENV_KEYS: tuple[str, ...] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "DATABASE_URL",
     "FAKE_CLAUDE_BEHAVIOR",
     "FAKE_CLAUDE_WORKTREE",
     "FAKE_CLAUDE_SETTINGS_PATH",
     "FAKE_CLAUDE_INVOCATION_COUNTER",
     "FAKE_CLAUDE_ARGV_LOG",
+    "GITHUB_TOKEN",
     "PATH",
 )
 
@@ -106,7 +109,7 @@ class ExecutorCliTests(unittest.TestCase):
         fake_behavior: str = "fix",
         token: str = "irrelevant-token",
         test_commands: tuple[TestCommand, ...] | None = None,
-        allowed_paths: tuple[str, ...] = (),
+        allowed_paths: tuple[str, ...] = ("example.txt",),
         timeout_seconds: float = 180,
     ) -> FixtureRun:
         tmp = Path(tempfile.mkdtemp(prefix="executor-cli-"))
@@ -133,7 +136,7 @@ class ExecutorCliTests(unittest.TestCase):
         fake_behavior: str = "fix",
         token: str = "irrelevant-token",
         test_commands: tuple[TestCommand, ...] | None = None,
-        allowed_paths: tuple[str, ...] = (),
+        allowed_paths: tuple[str, ...] = ("example.txt",),
         timeout_seconds: float = 180,
     ) -> FixtureRun:
         """Drive ``execute_task`` against an arbitrary pre-seeded repository.
@@ -294,6 +297,29 @@ class ExecutorCliTests(unittest.TestCase):
             "main\n",
         )
 
+    def test_outside_path_overrides_failed_test_escalation(self) -> None:
+        fixture = self.run_fixture(
+            fake_behavior="fix-and-outside",
+            allowed_paths=("example.txt",),
+            test_commands=(
+                TestCommand(
+                    argv=("uv", "run", "python", "-c", "raise SystemExit(1)")
+                ),
+            ),
+        )
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "path-scope-exceeded")
+
+    def test_outside_path_is_measured_after_worker_error(self) -> None:
+        fixture = self.run_fixture(
+            fake_behavior="outside-then-error",
+            allowed_paths=("example.txt",),
+        )
+
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "path-scope-exceeded")
+
     def test_passing_tests_with_no_changes_skip_empty_commit(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="executor-cli-no-change-"))
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -331,9 +357,12 @@ class ExecutorCliTests(unittest.TestCase):
         self.assertEqual(fixture.result.status, "ready-for-review")
         self.assertEqual(fixture.result.changed_files, ["example.txt"])
 
-    def test_executor_tests_do_not_receive_provider_credentials(self) -> None:
+    def test_executor_tests_receive_only_minimal_safe_environment(self) -> None:
         os.environ["ANTHROPIC_AUTH_TOKEN"] = "parent-process-secret"
         os.environ["ANTHROPIC_API_KEY"] = "parent-api-secret"
+        os.environ["AWS_SECRET_ACCESS_KEY"] = "parent-aws-secret"
+        os.environ["DATABASE_URL"] = "postgres://secret@example.invalid/db"
+        os.environ["GITHUB_TOKEN"] = "parent-github-secret"
         fixture = self.run_fixture(
             mode="edit",
             fake_behavior="fix",
@@ -346,8 +375,10 @@ class ExecutorCliTests(unittest.TestCase):
                         "-c",
                         (
                             "import os,sys; "
-                            "sys.exit(9 if any(k in os.environ for k in "
-                            "('ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY')) else 0)"
+                            "blocked=('ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY',"
+                            "'AWS_SECRET_ACCESS_KEY','DATABASE_URL','GITHUB_TOKEN'); "
+                            "sys.exit(9 if any(k in os.environ for k in blocked) "
+                            "or 'PATH' not in os.environ else 0)"
                         ),
                     )
                 ),
@@ -369,6 +400,14 @@ class ExecutorCliTests(unittest.TestCase):
 
     def test_provider_change_blocks_integration(self) -> None:
         fixture = self.run_fixture(mode="edit", fake_behavior="provider-change")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "provider-configuration-changed")
+
+    def test_provider_change_is_detected_after_worker_error(self) -> None:
+        fixture = self.run_fixture(
+            mode="edit",
+            fake_behavior="provider-change-error",
+        )
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "provider-configuration-changed")
 
@@ -401,6 +440,12 @@ class ExecutorCliTests(unittest.TestCase):
         fixture = self.run_fixture(fake_behavior="compat-warning-only")
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "worker-output-invalid")
+        self.assertEqual(fixture.result.attempts, 1)
+
+    def test_unknown_nonzero_cli_failure_is_distinct(self) -> None:
+        fixture = self.run_fixture(fake_behavior="cli-error")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "worker-cli-failed")
         self.assertEqual(fixture.result.attempts, 1)
 
     def test_worker_timeout_has_specific_escalation_reason(self) -> None:
@@ -446,6 +491,14 @@ class ExecutorCliTests(unittest.TestCase):
             fixture = self.run_fixture(fake_behavior="fix")
         self.assertEqual(fixture.result.status, "escalated")
         self.assertEqual(fixture.result.escalation_reason, "git-commit-failed")
+        self.assertIsNone(fixture.result.commit)
+
+    def test_change_measurement_failure_is_structured(self) -> None:
+        error = subprocess.CalledProcessError(1, ["git", "diff", "--name-only"])
+        with patch.object(GitWorkspace, "measure_changes", side_effect=error):
+            fixture = self.run_fixture(fake_behavior="fix")
+        self.assertEqual(fixture.result.status, "escalated")
+        self.assertEqual(fixture.result.escalation_reason, "git-measure-failed")
         self.assertIsNone(fixture.result.commit)
 
     def test_result_files_do_not_contain_token(self) -> None:

@@ -49,14 +49,14 @@ class GitWorkspace:
         self,
         max_files: int,
         max_diff_lines: int,
-        allowed_paths: tuple[str, ...] = (),
+        allowed_paths: tuple[str, ...],
     ) -> ChangeMeasure:
         """Count tracked and untracked files plus numstat lines, then enforce budgets."""
         files = _list_changed_files(self.path)
         diff_lines = _count_diff_lines(self.path)
 
         outside_scope = tuple(
-            path for path in files if allowed_paths and not _is_allowed_path(path, allowed_paths)
+            path for path in files if not _is_allowed_path(path, allowed_paths)
         )
         if outside_scope:
             raise PathScopeExceededError(

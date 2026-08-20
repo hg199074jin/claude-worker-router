@@ -96,3 +96,24 @@
 - [ ] Run one bounded live read-only call and one bounded one-file edit call with the current manually selected provider; confirm no permission denial, no hook context in safe mode, unchanged main checkout, and redacted evidence.
 - [ ] Commit the V1.1 implementation and verification artifacts locally; do not push.
 - [ ] Request a read-only Claude Code review with only the exact diff and in-repository requirements available.
+
+### Task 5: Post-review hardening
+
+**Files:**
+- Modify: `src/claude_worker_router/models.py`
+- Modify: `src/claude_worker_router/git_workspace.py`
+- Modify: `src/claude_worker_router/executor.py`
+- Modify: `tests/test_config_provider.py`
+- Modify: `tests/test_executor_cli.py`
+- Modify: `tests/fake_claude.py`
+
+- [ ] Require a non-empty `allowed_paths` list for every edit request and
+  reject raw empty or dot path components before normalization.
+- [ ] Measure edit scope and re-check the provider fingerprint after failed
+  worker or test outcomes, not only after successful runs.
+- [ ] Convert Git measurement failures into retained structured evidence.
+- [ ] Run approved tests with a minimal non-secret environment allowlist and
+  no Python bytecode cache generation.
+- [ ] Distinguish known provider failures, invalid third-party-model output,
+  and unknown non-zero Claude CLI failures.
+- [ ] Re-run the full deterministic suite and live read-only/edit acceptance.

@@ -57,6 +57,8 @@ Codex remains the owner of the work.
 
 - Require clean Git for any worker edits. Uncommitted or untracked changes
   block delegation.
+- Every edit request must declare at least one repository-relative
+  `allowed_paths` prefix. Never use an empty list as an unrestricted scope.
 - After this skill is installed, never bypass the executor with a direct
   implementation call to `claude -p`. All delegated implementation and
   analysis requests go through `scripts/run_worker.py` so the permission,
@@ -72,14 +74,18 @@ Codex remains the owner of the work.
 - The worker does not run tests, Git commands, version discovery, or inspect
   run records outside its working directory. The Python executor runs tests
   and Git; Codex inspects global configuration and retained evidence.
+- Executor-run tests receive only a small non-secret environment allowlist.
+  Tasks whose tests require credentials or sensitive host access stay with
+  Codex under the hard security gate.
 - Review the diff and test evidence Codex receives before integrating any
   worker change.
 - Never auto-integrate on escalation or on a provider-fingerprint
   mismatch. Both conditions return control to Codex and require explicit
   user direction.
 - Treat `worker-permission-denied`, `worker-turn-limit`, `worker-timeout`,
-  `worker-output-invalid`, `test-timeout`, and path-scope failures as distinct
-  takeover reasons. Do not retry them as generic provider failures.
+  `worker-output-invalid`, `worker-cli-failed`, `git-measure-failed`,
+  `test-timeout`, and path-scope failures as distinct takeover reasons. Do not
+  retry them as generic provider failures.
 
 ## Per-task overrides
 

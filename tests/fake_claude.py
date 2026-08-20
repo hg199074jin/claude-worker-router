@@ -11,7 +11,8 @@ Environment variables consumed:
 
 * ``FAKE_CLAUDE_BEHAVIOR`` -- one of ``fix``, ``fail-then-fix``, ``always-fail``,
   ``provider-change``, ``provider-error``, ``attempt-write-if-enabled``,
-  ``compat-warning-only``, ``fix-and-outside``, or ``no-change``.
+  ``cli-error``, ``compat-warning-only``, ``fix-and-outside``, ``outside-then-error``,
+  ``provider-change-error``, or ``no-change``.
 * ``FAKE_CLAUDE_WORKTREE`` -- absolute path of the worktree to edit (defaults to
   the current working directory).
 * ``FAKE_CLAUDE_SETTINGS_PATH`` -- absolute path of the provider settings file
@@ -64,7 +65,7 @@ def _maybe_modify_settings(behavior: str) -> None:
     path = Path(settings_path)
     if not path.exists():
         return
-    if behavior == "provider-change":
+    if behavior in ("provider-change", "provider-change-error"):
         # Mutate a parsed field so ``fingerprint_provider`` detects the change.
         # The fingerprint is computed from the parsed ``ProviderSnapshot`` dict,
         # not from raw bytes, so editing ANTHROPIC_MODEL is what matters.
@@ -89,7 +90,7 @@ def _maybe_apply_edit(behavior: str, count: int, worktree: Path) -> None:
         if "Edit" in tools or "Write" in tools:
             target.write_text("worker\n", encoding="utf-8")
         return
-    if behavior == "fix-and-outside":
+    if behavior in ("fix-and-outside", "outside-then-error"):
         target.write_text("worker\n", encoding="utf-8")
         (worktree / "outside.txt").write_text("outside\n", encoding="utf-8")
         return
@@ -135,6 +136,9 @@ def main() -> int:
             '[claude-code:unrecognized_model] {"model":"ThirdParty"}\n'
         )
         return 1
+    if behavior == "cli-error":
+        sys.stderr.write("internal CLI error\n")
+        return 1
     if behavior == "worker-timeout":
         time.sleep(0.25)
         return 0
@@ -144,6 +148,10 @@ def main() -> int:
 
     _maybe_modify_settings(behavior)
     _maybe_apply_edit(behavior, count, worktree)
+
+    if behavior in ("outside-then-error", "provider-change-error"):
+        sys.stderr.write("internal worker error\n")
+        return 1
 
     sys.stdout.write(json.dumps(_OK_RESULT))
     return 0

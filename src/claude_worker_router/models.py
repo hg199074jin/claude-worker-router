@@ -29,6 +29,10 @@ class TaskRequest:
     test_commands: tuple[TestCommand, ...]
     allowed_paths: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.mode == RunMode.EDIT and not self.allowed_paths:
+            raise ValueError("edit mode requires allowed_paths")
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskRequest":
         forbidden = {"provider_profile", "settings", "model"}.intersection(data)
@@ -111,7 +115,14 @@ class RunResult:
 
 
 def _normalize_allowed_path(value: str) -> str:
+    raw_parts = value.split("/")
+    if any(part in ("", ".", "..") for part in raw_parts):
+        raise ValueError(
+            "allowed_paths must be relative paths without empty or traversal components"
+        )
     path = PurePosixPath(value)
-    if path.is_absolute() or not path.parts or any(part in (".", "..") for part in path.parts):
-        raise ValueError("allowed_paths must be relative paths without parent traversal")
+    if path.is_absolute() or not path.parts:
+        raise ValueError(
+            "allowed_paths must be relative paths without empty or traversal components"
+        )
     return str(path)

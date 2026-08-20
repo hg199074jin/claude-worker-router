@@ -42,7 +42,7 @@ Command:
 /opt/homebrew/bin/uv run --python 3.12 python -m unittest discover -s tests -v
 ```
 
-Result: **31 tests, all PASS**.
+Result: **38 tests, all PASS**.
 
 Modules exercised: `test_config_provider`, `test_executor_cli`,
 `test_git_workspace`.
@@ -62,9 +62,10 @@ The same validator was run against the installed symlink at
 `/Users/sandro/.codex/skills/claude-worker-router`; result: `Skill is valid!`.
 
 The suite includes regressions for edit/read-only tool separation, path-scope
-enforcement, worker and executor failure classification, test timeouts, empty
-commits, Python cache suppression, and removal of Anthropic credentials from
-executor-run test environments. It also verifies that a third-party model
+enforcement before and after failed runs, worker and executor failure
+classification, post-failure provider fingerprint checks, test timeouts, empty
+commits, Python cache suppression, minimal test environments, and structured
+Git measurement failures. It also verifies that a third-party model
 compatibility warning without a valid result is classified as
 `worker-output-invalid`, not as a provider outage.
 
@@ -72,12 +73,12 @@ compatibility warning without a valid result is classified as
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `7a0934d3b03c4d9388138b24b698d8e1`                                  |
+| Run identifier      | `d5e3b6194a3441a2bacd980f6311c984`                                  |
 | Status              | `read-only`                                                          |
 | Attempts            | 1                                                                    |
 | Commit              | none                                                                 |
 | Executor-run tests  | none                                                                 |
-| Run record          | `/Users/sandro/.codex/model-router/runs/7a0934d3b03c4d9388138b24b698d8e1` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/d5e3b6194a3441a2bacd980f6311c984` |
 
 The task repository hash was identical before and after the call. The Claude
 session used only `Glob` and `Read`; no `Edit`, `Write`, or `Bash` call was
@@ -87,14 +88,14 @@ made.
 
 | Field              | Value                                                                |
 | ------------------ | -------------------------------------------------------------------- |
-| Run identifier      | `f42084d9507f493998ce768e001a9916`                                  |
+| Run identifier      | `ff684cd3fee94e2aa33041d3f3a08bed`                                  |
 | Status              | `ready-for-review`                                                  |
 | Attempts            | 1                                                                   |
 | Changed files       | `discount.py`                                                       |
 | Diff lines          | 2                                                                   |
-| Worker commit       | `0c7170b5b91f6aa14155695cdd289d1856ca8891`                         |
-| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.9vVErxxIxu` |
-| Run record          | `/Users/sandro/.codex/model-router/runs/f42084d9507f493998ce768e001a9916` |
+| Worker commit       | `224174c6589c0491c187b5cf21cd7f7362205d49`                         |
+| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.nhOBBKBbgl` |
+| Run record          | `/Users/sandro/.codex/model-router/runs/ff684cd3fee94e2aa33041d3f3a08bed` |
 
 ## Main-Checkout Isolation Proof
 
@@ -121,8 +122,9 @@ made.
   of the argv occurred.
 - The child test process ran with `PYTHONDONTWRITEBYTECODE=1`, so the test did
   not create an out-of-scope `__pycache__` directory.
-- `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` are removed from the child
-  test environment before tests start.
+- The child test environment is built from a small non-secret allowlist rather
+  than copied from the parent. Regression tests verify that Anthropic, AWS,
+  GitHub, and database credentials are absent.
 
 ## Permission and Hook Evidence
 
@@ -130,10 +132,8 @@ made.
   servers, skills, and hooks were not loaded for the worker session.
 - The two successful smoke session logs contain zero
   `hook_additional_context` records.
-- The edit model attempted one unavailable `Bash` tool call. Claude Code
-  rejected it automatically with `No such tool available: Bash`; there was no
-  approval prompt or user interruption. MiniMax then completed the task using
-  `Glob`, `Read`, and `Edit` only.
+- The final edit session used `Glob`, `Read`, and `Edit` only. It made no Bash
+  call and produced no approval prompt or user interruption.
 - The executor, not the model, owned the approved test and Git operations.
 
 A subsequent broad read-only review consumed its bounded turns without

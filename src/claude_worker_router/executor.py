@@ -35,7 +35,19 @@ from .provider import (
 #: deliberately excluded; the executor alone runs the approved test argv arrays.
 WORKER_TOOLS = "Read,Glob,Grep,Edit,Write"
 READ_ONLY_TOOLS = "Read,Glob,Grep"
-PROVIDER_CREDENTIAL_ENV_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+TEST_ENV_ALLOWLIST = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TERM",
+    "TMPDIR",
+    "TZ",
+    "USER",
+)
 
 
 @dataclass(frozen=True)
@@ -60,9 +72,11 @@ def run_test_command(
 ) -> dict[str, Any]:
     """Run a test without provider credentials or Python cache byproducts."""
     argv = list(command.argv)
-    test_env = os.environ.copy()
-    for key in PROVIDER_CREDENTIAL_ENV_KEYS:
-        test_env.pop(key, None)
+    test_env = {
+        key: os.environ[key]
+        for key in TEST_ENV_ALLOWLIST
+        if key in os.environ
+    }
     test_env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         proc = subprocess.run(
@@ -129,17 +143,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
 
     if loop_result.escalation_reason is not None:
         _set_escalation(result, loop_result.escalation_reason, last_summary)
-        _write_records(config, run_id, request, result)
-        return result
-
-    if request.mode == RunMode.READ_ONLY:
+    elif request.mode == RunMode.READ_ONLY:
         _set_status(result, "read-only")
     elif loop_result.tests and all(t["exit_code"] == 0 for t in loop_result.tests):
         _set_status(result, "ready-for-review")
     else:
         _set_escalation(result, "tests-failed-after-correction", last_summary)
 
-    if workspace is not None and result.status == "ready-for-review":
+    if workspace is not None:
         try:
             measure = workspace.measure_changes(
                 config.max_changed_files,
@@ -152,6 +163,8 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             _set_escalation(result, "path-scope-exceeded", str(exc))
         except ScopeExceededError as exc:
             _set_escalation(result, "scope-exceeded", str(exc))
+        except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+            _set_escalation(result, "git-measure-failed", str(exc))
 
     try:
         after_snapshot = read_provider_snapshot(config.claude_settings)
@@ -525,7 +538,9 @@ def _classify_worker_failure(stdout: str | None, stderr: str | None) -> str:
     )
     if any(marker in diagnostic for marker in provider_markers):
         return "provider-unreachable"
-    return "worker-output-invalid"
+    if not (stdout or "").strip() and "claude-code:unrecognized_model" in diagnostic:
+        return "worker-output-invalid"
+    return "worker-cli-failed"
 
 
 def _timeout_text(value: str | bytes | None) -> str:

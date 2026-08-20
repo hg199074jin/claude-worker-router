@@ -51,9 +51,36 @@ allowed_test_binaries = ["uv", "python3", "npm"]
                 "acceptance_criteria": ["tests pass"],
                 "mode": "edit",
                 "test_commands": [["uv", "run", "python", "-m", "unittest"]],
+                "allowed_paths": ["src"],
             }
         )
         self.assertEqual(request.test_commands[0].argv[0], "uv")
+
+    def test_edit_request_requires_at_least_one_allowed_path(self):
+        with self.assertRaisesRegex(ValueError, "edit mode requires allowed_paths"):
+            TaskRequest.from_dict(
+                {
+                    "repository": "/tmp/example",
+                    "task": "fix the parser",
+                    "acceptance_criteria": ["tests pass"],
+                    "mode": "edit",
+                    "test_commands": [],
+                    "allowed_paths": [],
+                }
+            )
+
+    def test_read_only_request_allows_empty_allowed_paths(self):
+        request = TaskRequest.from_dict(
+            {
+                "repository": "/tmp/example",
+                "task": "review the parser",
+                "acceptance_criteria": [],
+                "mode": "read-only",
+                "test_commands": [],
+                "allowed_paths": [],
+            }
+        )
+        self.assertEqual(request.allowed_paths, ())
 
     def test_rejects_provider_override_fields(self):
         for forbidden in ("provider_profile", "settings", "model"):
@@ -70,7 +97,15 @@ allowed_test_binaries = ["uv", "python3", "npm"]
                     TaskRequest.from_dict(data)
 
     def test_rejects_unsafe_allowed_paths(self):
-        for unsafe_path in ("/absolute/path.py", "../outside.py", "src/../secret.py"):
+        for unsafe_path in (
+            "/absolute/path.py",
+            "../outside.py",
+            "src/../secret.py",
+            "src//file.py",
+            "src/./file.py",
+            "src/",
+            ".",
+        ):
             with self.subTest(unsafe_path=unsafe_path):
                 with self.assertRaisesRegex(ValueError, "allowed_paths must be relative"):
                     TaskRequest.from_dict(
