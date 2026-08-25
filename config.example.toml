@@ -8,6 +8,7 @@ max_changed_files = 5
 max_diff_lines = 500
 allowed_test_binaries = ["uv", "python3", "npm"]
 
-run_records = "/Users/sandro/.codex/model-router/runs"
+# Replace these placeholders with absolute paths on your machine.
+run_records = "/absolute/path/to/.codex/model-router/runs"
 test_output_limit_bytes = 65536
-claude_settings = "/Users/sandro/.claude/settings.json"
+claude_settings = "/absolute/path/to/.claude/settings.json"

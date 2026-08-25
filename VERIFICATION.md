@@ -11,8 +11,7 @@ is included anywhere in this document.
 ## Verification Metadata
 
 - Verification date: 2026-08-21
-- Worktree path: `/Volumes/ORICO/Projects/claude-worker-router/.worktrees/router-implementation`
-- Branch: `codex-worker-router/implementation`
+- Verified commit: `4e6d9c5a82a17afea3cf4b32cc92fd3c3681d638`
 
 ## Tool Versions
 
@@ -23,7 +22,7 @@ is included anywhere in this document.
 | Git           | 2.55.0                                                  |
 | Claude Code   | 2.1.234                                                  |
 
-## Current Provider (CC Switch) — Non-secret Fingerprint Only
+## Provider Used During Verification — Non-secret Fingerprint Only
 
 | Field        | Value                  |
 | ------------ | ---------------------- |
@@ -90,7 +89,7 @@ JSON request parsing, so internal callers cannot bypass the preflight contract.
 | Attempts            | 1                                                                    |
 | Commit              | none                                                                 |
 | Executor-run tests  | none                                                                 |
-| Run record          | `/Users/sandro/.codex/model-router/runs/2d6fa2a1577f46989baadbf6befe7a0b` |
+| Run record          | `~/.codex/model-router/runs/2d6fa2a1577f46989baadbf6befe7a0b` |
 
 The task repository hash was identical before and after the call. The Claude
 session used only `Glob` and `Read`; no `Edit`, `Write`, or `Bash` call was
@@ -106,8 +105,8 @@ made.
 | Changed files       | `discount.py`                                                       |
 | Diff lines          | 2                                                                   |
 | Worker commit       | `c9b75759f173118d15c6794ba21a051a6d6bd0ca`                         |
-| Smoke root          | `/var/folders/cj/byj4hb2j0c1d9jydpcvtd9t40000gn/T/claude-worker-smoke.XXXXXX.H0nnDyiWc3` |
-| Run record          | `/Users/sandro/.codex/model-router/runs/e34455b939ee462cbd5b4d8f7b5150e0` |
+| Smoke root          | a temporary directory outside the repository |
+| Run record          | `~/.codex/model-router/runs/e34455b939ee462cbd5b4d8f7b5150e0` |
 
 ## Main-Checkout Isolation Proof
 
@@ -174,5 +173,5 @@ and provider credentials are withheld from executor-run tests.
 - `VERIFICATION.md`
 
 The live smoke directory, both router run records, and the isolated worker
-worktree are intentionally retained for review. They are outside the project
-worktree and are not integrated automatically.
+worktree were retained for review. They were outside the project worktree and
+were not integrated automatically.
