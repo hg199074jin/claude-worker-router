@@ -1,5 +1,10 @@
 # Claude Worker Router
 
+[![Tests](https://github.com/hg199074jin/claude-worker-router/actions/workflows/tests.yml/badge.svg)](https://github.com/hg199074jin/claude-worker-router/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+
+[简体中文](README.zh-CN.md)
+
 A small, provider-neutral executor that lets Codex delegate bounded coding
 tasks to the model currently selected in Claude Code through CC Switch. It
 creates reviewable evidence and keeps the worker inside an isolated Git
