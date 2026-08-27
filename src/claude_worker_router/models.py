@@ -9,6 +9,75 @@ class RunMode(StrEnum):
     EDIT = "edit"
 
 
+class RunLifecycle(StrEnum):
+    """Management-pipeline state of a run (V1.4).
+
+    Deliberately separate from :attr:`RunResult.status`, which keeps its
+    legacy execution-outcome vocabulary for stdin-API compatibility.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    READY_FOR_REVIEW = "ready-for-review"
+    INTEGRATED = "integrated"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+#: Lifecycle states that accept no further transitions.
+TERMINAL_LIFECYCLES: frozenset[RunLifecycle] = frozenset(
+    {
+        RunLifecycle.INTEGRATED,
+        RunLifecycle.BLOCKED,
+        RunLifecycle.CANCELLED,
+    }
+)
+
+#: Allowed lifecycle transitions; anything else must be refused explicitly.
+_LIFECYCLE_TRANSITIONS: dict[RunLifecycle, frozenset[RunLifecycle]] = {
+    RunLifecycle.PENDING: frozenset(
+        {RunLifecycle.RUNNING, RunLifecycle.CANCELLED}
+    ),
+    RunLifecycle.RUNNING: frozenset(
+        {
+            RunLifecycle.READY_FOR_REVIEW,
+            RunLifecycle.BLOCKED,
+            RunLifecycle.CANCELLED,
+        }
+    ),
+    RunLifecycle.READY_FOR_REVIEW: frozenset(
+        {RunLifecycle.INTEGRATED, RunLifecycle.CANCELLED}
+    ),
+    RunLifecycle.INTEGRATED: frozenset(),
+    RunLifecycle.BLOCKED: frozenset(),
+    RunLifecycle.CANCELLED: frozenset(),
+}
+
+
+def assert_lifecycle_transition(
+    current: RunLifecycle, target: RunLifecycle
+) -> None:
+    """Raise ``ValueError`` when ``current → target`` is not allowed."""
+    if target not in _LIFECYCLE_TRANSITIONS[current]:
+        raise ValueError(
+            f"illegal lifecycle transition: {current.value} -> {target.value}"
+        )
+
+
+def lifecycle_from_outcome(status: str) -> RunLifecycle:
+    """Map a legacy execution outcome to its lifecycle; never guess.
+
+    A successful read-only run maps to ``ready-for-review`` while the
+    outcome itself stays recorded separately, exactly as the V1.4 design
+    specifies.
+    """
+    if status in ("ready-for-review", "read-only"):
+        return RunLifecycle.READY_FOR_REVIEW
+    if status == "escalated":
+        return RunLifecycle.BLOCKED
+    raise ValueError(f"unknown execution outcome: {status!r}")
+
+
 @dataclass(frozen=True)
 class TestCommand:
     argv: tuple[str, ...]
