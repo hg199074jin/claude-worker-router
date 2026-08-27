@@ -102,6 +102,47 @@ This is deliberately narrow: two slots exist to remove real waiting, not to
 build a worker farm. The V1.5 design requires usage evidence (recent queues
 showing ≥20% parallelizable work) before raising limits.
 
+## Policy layer (V1.3)
+
+Limits from `config.toml` are the operator's run cap; policies tighten
+them further per machine and per project:
+
+```sh
+# ~/.codex/model-router/policy.toml            (global)
+sandbox_required = false
+[limits]
+max_turns = 6
+max_diff_lines = 400
+[paths]
+deny = ["secrets", "deployment/prod"]
+```
+
+```toml
+# <repo>/.claude-worker-router/policy.toml     (project, commit it!)
+[limits]
+max_turns = 4
+[paths]
+deny = ["infra"]
+```
+
+Rules: numbers may only shrink (`min`), deny lists only grow (union), and
+boolean safety requirements only turn on. A project file that tries to
+relax a resolved global value fails immediately with
+`policy-relaxation-rejected` — never silently clamped. Every run's
+evidence records SHA-256 fingerprints of each loaded layer plus the
+effective rule set, so any review can answer "under what policy did this
+worker run?".
+
+Additional hard edges added in V1.3: `.git` and `.claude-worker-router`
+are always denied; changed files hitting a deny prefix escalate with
+`policy-path-denied`; tasks may reference named `[test_profiles.*]`
+entries from config via `"test_profile"` (mutually exclusive with inline
+`test_commands`) — an `exclusive = true` profile feeds V1.5 batch
+exclusivity; unknown names escalate as `test-profile-unknown`. Setting
+`sandbox_required = true` currently fails closed with
+`sandbox-unavailable`; the feasibility spike lives at
+`docs/superpowers/research/2026-08-27-macos-sandbox-feasibility.md`.
+
 ## Safety model
 
 The selected Claude Code provider is manual-only. Do not include `model`,

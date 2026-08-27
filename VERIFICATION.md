@@ -2,6 +2,65 @@
 
 The newest record is at the top; earlier records remain below as history.
 
+# Verified V1.3 — Policy Hardening
+
+## Verification Metadata
+
+- Verification date: 2026-08-27
+- Branch: `v1-3-policy-hardening` (stacked on `v1-5-bounded-concurrency`)
+- Task commits:
+
+| Task | Subject                                            | Commit    |
+| ---- | -------------------------------------------------- | --------- |
+| 11   | tighten-only policy data model                      | `7867850` |
+| 12   | global + project policy loaders                     | `92a46af` |
+| 13   | deny-path enforcement, tightened budgets            | `24c112a` |
+| 14   | named test profiles + exclusivity                   | `7855f19` |
+| 15   | policy layer fingerprints in evidence               | `f746198` |
+| 16   | sandbox spike; fail-closed on unblessed requirement | `d54d52c` |
+
+## Deterministic Suite
+
+`uv run --python 3.12 python -m unittest discover -v` → **219 tests PASS**.
+New suites: `test_policy`, `test_policy_loader`, `test_test_profiles`,
+`test_macos_sandbox`.
+
+Gate coverage proven deterministically: project cannot relax resolved
+global numbers (`policy-relaxation-rejected`, zero worker calls); deny
+fires statically when a request scope sits inside a denied tree and
+dynamically when the diff touches one (`policy-path-denied`,
+`.git`/`.claude-worker-router` built-in); profiles replace inline commands,
+reject coexistence, and unknown names escalate (`test-profile-unknown`);
+profile `exclusive = true` feeds batch exclusivity; fingerprints are
+canonical SHA-256 per layer plus effective; `sandbox_required = true`
+escalates every run with `sandbox-unavailable` while the spike verdict is
+NOT READY.
+
+## Live Policy-Governed Edit Run (Real Provider)
+
+Temporary fixture + temporary config whose `global_policy` file set
+`max_turns=6`, `max_diff_lines=20`, `deny=["infra",".claude-worker-router"]`:
+
+| Field           | Value                                    |
+| --------------- | ---------------------------------------- |
+| Run identifier  | `246ec1aeb01143a1928a3b5427ecd6c1`      |
+| Status          | `ready-for-review`, attempts 1           |
+| Changed / diff  | `discount.py`, 2 lines                   |
+| Layer hashes    | global set; project null (absent); effective recorded |
+
+An independent checker re-parsed the global policy file and matched its
+canonical fingerprint against the evidence exactly.
+
+## Sandbox Spike Verdict
+
+Raw capability exists on this host (sandbox-exec present and runnable), but
+undocumented/deprecated SBPF semantics leave gates 3+6 unprovable without
+release-coupled iteration: verdict **NOT READY** for enforcement in V1.3.
+Full rationale and the SUPPORTED checklist:
+`docs/superpowers/research/2026-08-27-macos-sandbox-feasibility.md`.
+
+---
+
 # Verified V1.5 — Bounded Concurrency
 
 ## Verification Metadata

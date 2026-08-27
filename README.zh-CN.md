@@ -89,6 +89,41 @@ shell），worktree 与证据完整保留。
 V1.5 设计要求以真实使用数据（近期队列中 ≥20% 可并行任务）作为进一步放宽
 的前提。
 
+## 策略层（V1.3）
+
+`config.toml` 里的限额是运营者的运行上限；策略在此基础上按机器和项目进一步收紧：
+
+```sh
+# ~/.codex/model-router/policy.toml            （全局）
+sandbox_required = false
+[limits]
+max_turns = 6
+max_diff_lines = 400
+[paths]
+deny = ["secrets", "deployment/prod"]
+```
+
+```toml
+# <repo>/.claude-worker-router/policy.toml     （项目，随 Git 提交！）
+[limits]
+max_turns = 4
+[paths]
+deny = ["infra"]
+```
+
+合并规则：数值只许变小（min）、deny 只许增加（并集）、布尔安全要求只会开启。
+项目文件试图放宽已解析的全局值会立即失败（`policy-relaxation-rejected`），
+绝不静默钳制。每次运行的证据都会记录各层及最终生效规则集的 SHA-256 指纹，
+回答“这个 worker 当时是在什么策略下执行的”。
+
+V1.3 新增的硬边界：`.git` 与 `.claude-worker-router` 永远禁写；改动命中
+deny 前缀以 `policy-path-denied` 升级；任务可用 `"test_profile"` 引用配置中
+的命名测试方案（与内联 `test_commands` 互斥），`exclusive = true` 的方案直接
+接入 V1.5 批次排他；未知名称升级为 `test-profile-unknown`。设置
+`sandbox_required = true` 目前会 fail closed 返回 `sandbox-unavailable`；
+可行性研究见
+`docs/superpowers/research/2026-08-27-macos-sandbox-feasibility.md`。
+
 ## 安全模型
 
 Claude Code 当前使用的提供商只能手动选择。请求中不要带 `model`、

@@ -16,3 +16,14 @@ claude_settings = "/absolute/path/to/.claude/settings.json"
 # V1.2 accepts only "deny": worker runs that add, modify, or delete any
 # binary file escalate with binary-change-denied.
 binary_edit_policy = "deny"
+
+# V1.3 policy layer (optional): a global policy file tightens every run,
+# and projects may add their own at <repo>/.claude-worker-router/policy.toml.
+# Project files may only tighten the global rules; relaxation is rejected.
+# global_policy = "/absolute/path/to/.codex/model-router/policy.toml"
+
+# Named test profiles (optional): reference from a task with
+# "test_profile": "<name>" instead of inline test_commands.
+# [test_profiles.python-unit]
+# commands = [["uv", "run", "python", "-m", "unittest"]]
+# exclusive = false

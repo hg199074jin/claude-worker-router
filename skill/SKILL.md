@@ -169,7 +169,30 @@ under these rules — communicate them when announcing the route:
   parallelism; concurrent integrators get `integration-lock-busy`.
 
 Never suggest raising the limit above two; the design reserves growth for
-evidence-backed future versions. V1.4 stays strictly sequential; concurrent
+evidence-backed future versions.
+
+## Policy discipline (V1.3)
+
+Before delegating, check the policy layers that now bound every run:
+
+- Global `~/.codex/model-router/policy.toml` and per-project
+  `.claude-worker-router/policy.toml` tighten budgets, grow deny lists, and
+  can demand (never disable) a sandbox. A project that tries to relax a
+  global rule fails before any worker call with
+  `policy-relaxation-rejected`; report this as a repository configuration
+  mistake to fix in the project file, not as a router bug.
+- `.git` and `.claude-worker-router` are denied for worker edits at all
+  times; actual diff hits surface as `policy-path-denied`.
+- Tasks may reference named `[test_profiles.*]` entries instead of inline
+  commands (`"test_profile": "python-unit"`); profile `exclusive = true`
+  reserves a solo concurrency batch. Unknown names escalate with
+  `test-profile-unknown`.
+- Every run's evidence records fingerprints of each active policy layer.
+  When reviewing, quote these hashes if a dispute about "what rules were in
+  effect" arises — do not reconstruct from memory.
+- `sandbox_required = true` currently escalates every run with
+  `sandbox-unavailable`; treat it as an explicit "do not delegate yet"
+  switch until the research doc is upgraded to SUPPORTED. V1.4 stays strictly sequential; concurrent
 execution does not exist until V1.5 earns it with real usage data.
 
 ## Per-task overrides
