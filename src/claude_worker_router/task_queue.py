@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import uuid
+from typing import Callable
 from pathlib import Path
 from typing import Any
 
@@ -109,34 +110,62 @@ def reconcile_before_drain(config: RouterConfig, *, out) -> int:
     return moved
 
 
-def _execute_claimed(row: dict[str, Any], config: RouterConfig) -> RunResult:
+def _execute_claimed(
+    row: dict[str, Any],
+    config: RouterConfig,
+    *,
+    on_child_start: Callable[[int], None] | None = None,
+) -> RunResult:
     """Rebuild the request from pre-created evidence and execute it."""
     evidence_path = Path(row["evidence_path"])
     raw = (evidence_path / "request.json").read_text(encoding="utf-8")
     request = TaskRequest.from_dict(json.loads(raw))
-    return execute_task(request, config)
+    return execute_task(request, config, on_child_start=on_child_start)
 
 
 def drain_once(config: RouterConfig, *, runner_pid: int | None = None) -> dict[str, Any]:
     """Claim one task (or none), execute it synchronously, record outcome."""
+    from .state_store import StateTransitionError
+
     store = open_store(config)
     claimed = store.claim_next(pid=os.getpid() if runner_pid is None else runner_pid)
     if claimed is None:
         return {"claimed": False}
 
-    result = _execute_claimed(claimed, config)
+    run_id = claimed["run_id"]
+
+    def record_worker_child(child_pid: int) -> None:
+        # The session-isolated Claude process is what ``cancel`` must hit;
+        # the drainer pid alone would strand its whole subtree.
+        try:
+            store.set_pid(run_id, child_pid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    result = _execute_claimed(claimed, config, on_child_start=record_worker_child)
+
     from .models import lifecycle_from_outcome
 
     final_lifecycle = lifecycle_from_outcome(result.status)
-    store.finish(
-        claimed["run_id"],
-        lifecycle=final_lifecycle,
-        outcome=result.status,
-    )
-    updated = store.get(claimed["run_id"]) or {}
+    try:
+        store.finish(run_id, lifecycle=final_lifecycle, outcome=result.status)
+    except StateTransitionError:
+        # A concurrent explicit cancel already moved this run to a terminal
+        # state; never overwrite an operator's cancellation with our result.
+        step_row = store.get(run_id) or {}
+        return {
+            "claimed": True,
+            "run_id": run_id,
+            "lifecycle": step_row.get("lifecycle", RunLifecycle.CANCELLED.value),
+            "outcome": step_row.get("outcome"),
+            "escalation_reason": result.escalation_reason,
+            "externally_finalized": True,
+        }
+
+    updated = store.get(run_id) or {}
     return {
         "claimed": True,
-        "run_id": claimed["run_id"],
+        "run_id": run_id,
         "lifecycle": updated.get("lifecycle", final_lifecycle.value),
         "outcome": result.status,
         "escalation_reason": result.escalation_reason,
@@ -206,3 +235,125 @@ def mark_integrated_sync(
     except Exception as exc:  # noqa: BLE001 - sync must not break integration UX
         print(f"warning: state sync skipped: {exc}", file=log)
         return False
+
+
+class CancelRefused(RuntimeError):
+    """Raised when the target run can no longer be cancelled."""
+
+
+def _append_cancel_event(
+    config: RouterConfig, run_id: str, *, stage: str, detail: dict[str, Any]
+) -> None:
+    try:
+        EvidenceWriter(config.run_records, run_id).append_event(
+            "cancelled", stage=stage, **detail
+        )
+    except OSError:
+        pass
+
+
+def cancel_run(run_id: str, config: RouterConfig, *, log=None) -> dict[str, Any]:
+    """Cancel a queued or running task per the V1.4 cancellation contract."""
+    import signal
+    import time
+
+    from .state_store import _pid_alive
+
+    log = log or sys.stderr
+    store = open_store(config)
+    try:
+        row = store.get(run_id)
+    except ValueError as exc:
+        raise CancelRefused(str(exc)) from exc
+    if row is None:
+        raise CancelRefused(f"no such run in queue: {run_id}")
+
+    lifecycle = RunLifecycle(row["lifecycle"])
+
+    if lifecycle is RunLifecycle.PENDING:
+        store.finish(
+            run_id,
+            lifecycle=RunLifecycle.CANCELLED,
+            outcome="cancelled-by-user",
+        )
+        _append_cancel_event(config, run_id, stage="pending", detail={})
+        return {"action": "cancelled-before-start"}
+
+    if lifecycle is RunLifecycle.RUNNING:
+        pid = row.get("pid")
+        used_group_kill = False
+        if isinstance(pid, int) and pid > 0:
+            if _pid_alive(pid):
+                own_pgid = os.getpgrp()
+                try:
+                    pgid = os.getpgid(pid)
+                except OSError:
+                    pgid = None
+                try:
+                    if pgid and pgid != own_pgid:
+                        # Session-isolated runner: the whole worker subtree
+                        # can die without touching the operator's shell.
+                        os.killpg(pgid, signal.SIGTERM)
+                        used_group_kill = True
+                    else:
+                        os.kill(pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                deadline = time.time() + 5.0
+                while _pid_alive(pid) and time.time() < deadline:
+                    time.sleep(0.05)
+                if used_group_kill and _pid_alive(pid):
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+            else:
+                print(f"note: recorded runner pid {pid} no longer exists", file=log)
+        store.finish(
+            run_id,
+            lifecycle=RunLifecycle.CANCELLED,
+            outcome="cancelled-by-user",
+        )
+        _append_cancel_event(
+            config,
+            run_id,
+            stage="running",
+            detail={"group_kill": used_group_kill},
+        )
+        return {
+            "action": "terminated-running",
+            "process_group_terminated": used_group_kill,
+        }
+
+    if lifecycle is RunLifecycle.READY_FOR_REVIEW:
+        # Cancelling a finished result records an explicit discard intent;
+        # the isolated worktree stays until cleanup decides otherwise.
+        store.finish(
+            run_id,
+            lifecycle=RunLifecycle.CANCELLED,
+            outcome="cancelled-by-user",
+        )
+        _append_cancel_event(
+            config,
+            run_id,
+            stage="ready-for-review",
+            detail={"worktree_preserved": True},
+        )
+        return {"action": "discard-intent-recorded"}
+
+    raise CancelRefused(
+        f"cannot cancel run in terminal state '{lifecycle.value}'"
+    )
+
+
+def execute_single(config: RouterConfig) -> int:
+    """One claimed execution inside an isolated process session.
+
+    Exit codes: 0 finished acceptable, 3 blocked, 4 nothing claimable.
+    """
+    step = drain_once(config, runner_pid=os.getpid())
+    if not step.get("claimed"):
+        return 4
+    if step.get("lifecycle") == RunLifecycle.BLOCKED.value:
+        return 3
+    return 0

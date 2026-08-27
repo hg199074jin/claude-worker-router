@@ -431,7 +431,30 @@ def _drain_command(args: argparse.Namespace, config: RouterConfig) -> int:
     return code
 
 
-#: Command handlers; all V1.4 commands are implemented.
+def _cancel_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Cancel a pending/running task or record discard intent."""
+    from .task_queue import CancelRefused, cancel_run
+
+    try:
+        validate_run_id(args.run_id)
+    except ValueError as exc:
+        print(f"invalid run id: {exc}", file=sys.stderr)
+        return 2
+    try:
+        outcome = cancel_run(args.run_id, config)
+    except CancelRefused as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        sys.stdout.write(json.dumps(outcome, indent=2, sort_keys=True) + "\n")
+    else:
+        sys.stdout.write(
+            f"cancelled {args.run_id}: {outcome['action']}\n"
+        )
+    return 0
+
+
+#: Command handlers; all shipped commands are implemented.
 _COMMAND_HANDLERS: dict[str, object] = {
     "doctor": _doctor_command,
     "list": _list_command,
@@ -441,6 +464,7 @@ _COMMAND_HANDLERS: dict[str, object] = {
     "submit": _submit_command,
     "queue": _queue_command,
     "drain": _drain_command,
+    "cancel": _cancel_command,
 }
 
 
@@ -523,6 +547,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     drain_parser.add_argument(
         "--once", action="store_true", help="process at most one claimed task"
     )
+    cancel = subparsers.add_parser("cancel", help="cancel a queued/running task")
+    cancel.add_argument("run_id")
+    cancel.add_argument("--json", action="store_true")
 
     return parser.parse_args(argv)
 

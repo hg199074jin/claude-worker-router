@@ -202,7 +202,7 @@ class DrainTests(QueueCliHarness):
         """Patch task_queue.execute_task with an ordered scripted response."""
         calls: list[str] = []
 
-        def fake_execute(request, config):
+        def fake_execute(request, config, on_child_start=None):
             run_marker = request.task
             calls.append(run_marker)
             return script[len(calls) - 1]
@@ -220,7 +220,7 @@ class DrainTests(QueueCliHarness):
 
         calls: list[str] = []
 
-        def fake_execute(request, config):
+        def fake_execute(request, config, on_child_start=None):
             calls.append(request.task)
             return RunResult(run_id="x" * 32, status="ready-for-review")
 
@@ -252,7 +252,7 @@ class DrainTests(QueueCliHarness):
             self._main(["--config", str(self.config_path), "submit"])
         self._restore_stdin()
 
-        def fake_execute(request, config):
+        def fake_execute(request, config, on_child_start=None):
             return RunResult(run_id="y" * 32, status="ready-for-review")
 
         with (
@@ -278,7 +278,7 @@ class DrainTests(QueueCliHarness):
         self._main(["--config", str(self.config_path), "submit"])
         self._restore_stdin()
 
-        def fake_execute(request, config):
+        def fake_execute(request, config, on_child_start=None):
             return RunResult(
                 run_id="z" * 32,
                 status="escalated",
@@ -321,7 +321,7 @@ class DrainTests(QueueCliHarness):
 
         executed: list[str] = []
 
-        def fake_execute(request, config):
+        def fake_execute(request, config, on_child_start=None):
             executed.append(request.task)
             return RunResult(run_id="w" * 32, status="read-only")
 

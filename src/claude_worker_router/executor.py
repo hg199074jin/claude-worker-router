@@ -15,7 +15,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import __version__
 from .config import RouterConfig
@@ -123,7 +123,12 @@ def run_test_command(
     }
 
 
-def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
+def execute_task(
+    request: TaskRequest,
+    config: RouterConfig,
+    *,
+    on_child_start: Callable[[int], None] | None = None,
+) -> RunResult:
     """Run one bounded worker task and return review evidence without integrating it."""
     run_id = _new_run_id()
     result = RunResult(run_id=run_id, status="escalated")
@@ -247,6 +252,7 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         workspace.path if workspace else request.repository,
         record_event,
         metadata,
+        on_child_start=on_child_start,
     )
     result.attempts = loop_result.attempts
     result.tests = loop_result.tests
@@ -378,6 +384,7 @@ def _run_worker_loop(
     cwd: Path,
     record_event: Any,
     metadata: dict[str, Any],
+    on_child_start: Callable[[int], None] | None = None,
 ) -> _WorkerLoopResult:
     """Invoke the worker up to ``correction_limit + 1`` times; return outcome."""
     attempts = 0
@@ -390,7 +397,9 @@ def _run_worker_loop(
         record_event("worker-started", attempt=attempts)
         if metadata["worker_started_at"] is None:
             metadata["worker_started_at"] = utc_timestamp()
-        outcome = _invoke_worker(config, prompt, cwd, request.mode)
+        outcome = _invoke_worker(
+            config, prompt, cwd, request.mode, on_child_start=on_child_start
+        )
         metadata["worker_finished_at"] = utc_timestamp()
         record_event("worker-finished", attempt=attempts, status=outcome.status)
         last_summary = outcome.summary
@@ -466,8 +475,15 @@ def _invoke_worker(
     prompt: str,
     cwd: Path,
     mode: RunMode,
+    on_child_start: Callable[[int], None] | None = None,
 ) -> _WorkerOutcome:
-    """Invoke Claude with the bounded argv contract; never raises."""
+    """Invoke Claude with the bounded argv contract; never raises.
+
+    The worker runs in its own process session (``start_new_session``) so a
+    later ``cancel`` can terminate exactly that process group. External
+    behavior (argv, stdin prompt, JSON stdout contract, timeout handling)
+    matches the earlier ``subprocess.run`` implementation.
+    """
     tools, permission_mode = _worker_policy(mode)
     argv = [
         config.command,
@@ -482,20 +498,36 @@ def _invoke_worker(
     ]
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv,
             cwd=str(cwd),
             shell=False,
-            check=False,
             text=True,
-            capture_output=True,
-            timeout=config.timeout_seconds,
-            input=prompt,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
+    except OSError as exc:
+        return _WorkerOutcome(
+            status="worker-launch-failed",
+            summary=f"worker could not be launched: {exc}",
+        )
+
+    if on_child_start is not None:
+        try:
+            on_child_start(proc.pid)
+        except Exception:  # noqa: BLE001 - bookkeeping must not kill the run
+            pass
+
+    try:
+        stdout, stderr = proc.communicate(input=prompt, timeout=config.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
         return _WorkerOutcome(
             status="worker-timeout",
-            summary=f"worker timed out after {exc.timeout} seconds",
+            summary=f"worker timed out after {config.timeout_seconds} seconds",
         )
     except OSError as exc:
         return _WorkerOutcome(
@@ -505,11 +537,11 @@ def _invoke_worker(
 
     if proc.returncode != 0:
         return _WorkerOutcome(
-            status=_classify_worker_failure(proc.stdout, proc.stderr),
-            summary=_bounded_stderr(proc.stderr),
+            status=_classify_worker_failure(stdout, stderr),
+            summary=_bounded_stderr(stderr),
         )
 
-    summary = _parse_worker_output(proc.stdout)
+    summary = _parse_worker_output(stdout)
     if summary is None:
         return _WorkerOutcome(
             status="worker-output-invalid",

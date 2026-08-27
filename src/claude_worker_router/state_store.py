@@ -298,6 +298,27 @@ class StateStore:
 
     # ------------------------------------------------------ crash recovery
 
+    def set_pid(self, run_id: str, pid: int) -> None:
+        """Refresh the live runner/worker pid on a running row."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE runs SET pid = ? WHERE run_id = ?", (int(pid), run_id)
+            )
+
+    def peek_next_pending(self) -> dict[str, Any] | None:
+        """Next pending row WITHOUT claiming it (pure read)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM runs
+                 WHERE lifecycle = ?
+                 ORDER BY priority DESC, created_at ASC
+                 LIMIT 1
+                """,
+                (RunLifecycle.PENDING.value,),
+            ).fetchone()
+            return self._to_dict(row)
+
     def find_interrupted(
         self, pid_alive: Callable[[int], bool]
     ) -> list[dict[str, Any]]:

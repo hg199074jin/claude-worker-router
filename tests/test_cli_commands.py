@@ -156,6 +156,7 @@ class SubcommandDispatchTests(unittest.TestCase):
                 "submit",
                 "queue",
                 "drain",
+                "cancel",
             },
         )
 
