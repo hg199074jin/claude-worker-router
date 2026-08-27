@@ -275,6 +275,9 @@ def _integrate_command(args: argparse.Namespace, config: RouterConfig) -> int:
         print(f"integrate failed unexpectedly: {exc}", file=sys.stderr)
         return 2
     sys.stdout.write(f"integrated {args.run_id} at {merged_sha}\n")
+    from .task_queue import mark_integrated_sync
+
+    mark_integrated_sync(args.run_id, config)
     return 0
 
 
@@ -359,13 +362,85 @@ def vars_like(entry) -> dict:
     return {"run_id": entry.run_id, "detail": entry.detail}
 
 
-#: Command handlers; all five V1.2 commands are implemented.
+def _submit_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Validate one stdin task and queue it; returns immediately."""
+    from .task_queue import submit_task
+
+    try:
+        raw = sys.stdin.read()
+    except OSError as exc:
+        print(f"unable to read stdin: {exc}", file=sys.stderr)
+        return 2
+    try:
+        request_data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"invalid JSON on stdin: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(request_data, dict):
+        print("stdin JSON must decode to an object", file=sys.stderr)
+        return 2
+
+    try:
+        submission = submit_task(request_data, config)
+    except ValueError as exc:
+        print(f"invalid request: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"submit failed: {exc}", file=sys.stderr)
+        return 2
+    sys.stdout.write(
+        json.dumps(submission, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    )
+    return 0
+
+
+def _queue_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Show queued or historically-stated runs."""
+    from .task_queue import list_backlog
+
+    try:
+        limit = int(args.limit) if args.limit is not None else None
+        if limit is not None and limit < 0:
+            raise ValueError("--limit must be non-negative")
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    rows = list_backlog(config, state=args.state, limit=limit)
+    if args.json:
+        sys.stdout.write(
+            json.dumps({"runs": rows}, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n"
+        )
+        return 0
+    header = f"{'RUN ID':<36} {'STATE':<18} {'PRIO':>4} {'OUTCOME':<24} CREATED"
+    sys.stdout.write(header + "\n")
+    for row in rows:
+        sys.stdout.write(
+            f"{row['run_id']:<36} {row['lifecycle']:<18} {row['priority']:>4} "
+            f"{(row.get('outcome') or '-'):<24} {(row.get('created_at') or '')[:19]}\n"
+        )
+    return 0
+
+
+def _drain_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Sequentially execute every pending task with a single worker."""
+    from .task_queue import drain
+
+    code, _processed = drain(config, once=args.once)
+    return code
+
+
+#: Command handlers; all V1.4 commands are implemented.
 _COMMAND_HANDLERS: dict[str, object] = {
     "doctor": _doctor_command,
     "list": _list_command,
     "show": _show_command,
     "integrate": _integrate_command,
     "cleanup": _cleanup_command,
+    "submit": _submit_command,
+    "queue": _queue_command,
+    "drain": _drain_command,
 }
 
 
@@ -428,6 +503,25 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     cleanup.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON (--stale only)"
+    )
+
+    subparsers.add_parser(
+        "submit",
+        help="queue one stdin task for a later drain (same JSON contract as stdin mode)",
+    )
+    queue = subparsers.add_parser("queue", help="show the task backlog")
+    queue.add_argument(
+        "--state",
+        default="pending",
+        help="pending|running|ready-for-review|integrated|blocked|cancelled|all",
+    )
+    queue.add_argument("--limit", type=int, help="show at most N rows")
+    queue.add_argument("--json", action="store_true")
+    drain_parser = subparsers.add_parser(
+        "drain", help="run all pending tasks sequentially with one worker"
+    )
+    drain_parser.add_argument(
+        "--once", action="store_true", help="process at most one claimed task"
     )
 
     return parser.parse_args(argv)
