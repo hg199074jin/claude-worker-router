@@ -103,6 +103,10 @@ class TaskRequest:
     mode: RunMode
     test_commands: tuple[TestCommand, ...]
     allowed_paths: tuple[str, ...] = ()
+    # V1.5 adaptation (pending V1.3 test profiles): request-level marker
+    # meaning "these tests require the whole machine" — the scheduler must
+    # give such a run a batch of its own.
+    exclusive_tests: bool = False
 
     def __post_init__(self) -> None:
         normalized_paths = tuple(
@@ -136,7 +140,18 @@ class TaskRequest:
         if not isinstance(raw_allowed_paths, list) or not all(isinstance(item, str) and item for item in raw_allowed_paths):
             raise ValueError("allowed_paths must be strings")
         allowed_paths = tuple(_normalize_allowed_path(item) for item in raw_allowed_paths)
-        return cls(Path(repository).resolve(), task.strip(), tuple(criteria), mode, commands, allowed_paths)
+        exclusive_tests = data.get("exclusive_tests", False)
+        if not isinstance(exclusive_tests, bool):
+            raise ValueError("exclusive_tests must be a boolean")
+        return cls(
+            Path(repository).resolve(),
+            task.strip(),
+            tuple(criteria),
+            mode,
+            commands,
+            allowed_paths,
+            exclusive_tests,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the request for the redacted run record (no env, no tokens)."""
@@ -147,6 +162,7 @@ class TaskRequest:
             "mode": self.mode.value,
             "test_commands": [list(cmd.argv) for cmd in self.test_commands],
             "allowed_paths": list(self.allowed_paths),
+            "exclusive_tests": self.exclusive_tests,
         }
 
 

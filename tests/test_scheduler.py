@@ -156,3 +156,107 @@ class ConcurrencyTwoRunnerTests(QueueCliHarness):
             code, out, err = self._main(["--config", str(self.config_path), "drain"])
         self.assertEqual(code, 0, err)
         self.assertEqual(order, ["job-c1", "job-c2"])
+
+
+# --------------------------------------------------------------------------
+# Task 25: exclusive tests (request-level adaptation pending V1.3 profiles)
+
+class ExclusiveSchedulingTests(QueueCliHarness):
+    def _enable_two(self):
+        text = self.config_path.read_text(encoding="utf-8")
+        self.config_path.write_text(text + "\nmax_concurrency = 2\n", encoding="utf-8")
+        from claude_worker_router.config import load_config
+
+        self._config = load_config(self.config_path)
+
+    def _submit_exclusive_then_pair(self):
+        ex = _valid_task(
+            repository=str(self.tmp / "x-exc"),
+            task="job-exclusive",
+            priority=9,
+            exclusive_tests=True,
+        )
+        Path(ex["repository"]).mkdir(exist_ok=True)
+        _, ex_sub = self._submit(ex)
+
+        normals = []
+        for tag in ("n1", "n2"):
+            payload = _valid_task(repository=str(self.tmp / f"x-{tag}"), task=f"job-{tag}")
+            Path(payload["repository"]).mkdir(exist_ok=True)
+            _, sub = self._submit(payload)
+            normals.append(sub["run_id"])
+        return ex_sub["run_id"], normals
+
+    def test_model_contract_parses_and_persists_flag(self):
+        import tempfile
+        from claude_worker_router.models import RunMode, TaskRequest, TestCommand
+
+        request = TaskRequest.from_dict(
+            {
+                "repository": "/tmp/x",
+                "task": "exclusive fixture",
+                "mode": "edit",
+                "test_commands": [["uv"]],
+                "allowed_paths": ["a"],
+                "exclusive_tests": True,
+            }
+        )
+        self.assertTrue(request.exclusive_tests)
+        self.assertTrue(request.to_dict()["exclusive_tests"])
+
+        for bad in ("yes", 1, None):
+            data = {
+                "repository": "/tmp/x",
+                "task": "bad",
+                "mode": "read-only",
+                "allowed_paths": [],
+                "test_commands": [],
+                "exclusive_tests": bad,
+            }
+            with self.subTest(bad=bad):
+                from claude_worker_router.models import RunMode as RM
+
+                data["mode"] = str(RM.READ_ONLY.value)
+                with self.assertRaisesRegex(ValueError, "exclusive_tests"):
+                    TaskRequest.from_dict(data)
+
+    def test_exclusive_batch_runs_alone_before_others(self):
+        self._enable_two()
+        ex_id, normal_ids = self._submit_exclusive_then_pair()
+
+        intervals: dict[str, tuple[float, float]] = {}
+        lock = threading.Lock()
+
+        def fake_execute(request, config, on_child_start=None, run_id=None):
+            start = time.monotonic()
+            time.sleep(0.08)
+            end = time.monotonic()
+            with lock:
+                intervals[run_id or ""] = (start, end)
+            return RunResult(run_id=run_id or "", status="read-only")
+
+        with (
+            patch("claude_worker_router.task_queue.execute_task", fake_execute),
+            patch(
+                "claude_worker_router.task_queue.read_current_fingerprint",
+                side_effect=lambda cfg: "fp-stable",
+            ),
+            patch("claude_worker_router.task_queue.os.getpid", return_value=995),
+        ):
+            code, out, err = self._main(["--config", str(self.config_path), "drain"])
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(intervals), 3)
+
+        def overlaps(a, b):
+            return max(a[0], b[0]) < min(a[1], b[1])
+
+        exc_interval = intervals[ex_id]
+        for nid in normal_ids:
+            self.assertFalse(
+                overlaps(exc_interval, intervals[nid]),
+                f"exclusive overlapped {nid}",
+            )
+        # The two non-exclusive tasks still ran concurrently with each other.
+        n1, n2 = (intervals[nid] for nid in normal_ids)
+        self.assertTrue(overlaps(n1, n2))

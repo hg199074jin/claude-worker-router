@@ -241,6 +241,7 @@ def _select_batch(
 
     chosen: list[dict[str, Any]] = []
     chosen_scopes: list[tuple[str, ...]] = []
+    batch_exclusive = False
 
     for row in pending:
         if len(chosen) >= limit:
@@ -264,12 +265,16 @@ def _select_batch(
         full_tuple = tuple(
             str(PurePosixPath(synthetic_root) / path) for path in scope
         )
+        if batch_exclusive:
+            continue  # once an exclusive run is chosen, the batch is closed
         if exclusive and chosen:
-            continue  # exclusive needs an empty batch slot of its own
+            continue  # a later exclusive run may not join others either
         if any(paths_conflict(full_tuple, other) for other in chosen_scopes):
             continue
         chosen.append(row)
         chosen_scopes.append(full_tuple)
+        if exclusive:
+            batch_exclusive = True
     return chosen
 
 
@@ -403,7 +408,7 @@ def drain(
         rows = (
             [store.peek_next_pending()]
             if once and not processed
-            else _select_batch(store, config, 2 - len(processed) % 2 or 2)
+            else _select_batch(store, config, getattr(config, 'max_concurrency', 1))
         )
         rows = [r for r in rows if r]
         if once:
