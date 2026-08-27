@@ -51,6 +51,26 @@ claude-worker-router cleanup --stale                # 报告超过 168 小时的
 rebase、没有强推、也不会制造 merge commit；如果主分支已前进，由 Codex
 决定下一步。证据目录是永久记录，cleanup 永远不会删除它们。
 
+## 队列与取消（V1.4）
+
+任务密集时可以把提交与执行解耦：
+
+```sh
+printf '%s' '{...任务 JSON...}' | claude-worker-router submit   # 立即返回 pending
+claude-worker-router queue [--state ...] [--json]
+claude-worker-router drain [--once]     # 单 worker，严格顺序执行
+claude-worker-router cancel RUN_ID      # 支持 pending / running / ready-for-review
+```
+
+`submit` 复用与 stdin 相同的 JSON 契约，另加可选的 `priority`（越大越先
+执行）与 `parent_run_id`；两者仅存于状态库，不进入证据契约。生命周期
+（`pending → running → ready-for-review / integrated / blocked /
+cancelled`）记录在运行记录目录旁的 SQLite `state.db` 中，重启不丢。
+上次 drain 异常中断会在下次启动时转为 blocked（`runner-interrupted`），
+并由 `doctor --json` 的 queue-health 检查暴露——重新执行必须使用新的
+run id。取消 running 任务只会终止 worker 自己的进程组（绝不波及你的
+shell），worktree 与证据完整保留。
+
 ## 安全模型
 
 Claude Code 当前使用的提供商只能手动选择。请求中不要带 `model`、

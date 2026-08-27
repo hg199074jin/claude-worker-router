@@ -2,6 +2,71 @@
 
 The newest record is at the top; earlier records remain below as history.
 
+# Verified V1.4 — Run Management
+
+## Verification Metadata
+
+- Verification date: 2026-08-27
+- Branch: `v1-4-run-management` (stacked on `v1-2-operational-hardening`)
+- Task commits:
+
+| Task  | Subject                                          | Commit    |
+| ----- | ------------------------------------------------ | --------- |
+| 17    | separate run lifecycle from execution outcome     | `ce7cf02` |
+| 18    | sqlite lifecycle state store                      | `0bc5a58` |
+| 19    | submit / queue / sequential drain                 | `d20ffb8` |
+| 19b   | dispatcher guard covers V1.4 commands             | `3efb21b` |
+| 20    | doctor queue-health surfaces interrupted runners  | `64b8d6f` |
+| 21    | cancellation with process-group safety            | `5d01632` |
+| fix   | single identity from submit through execution     | `4ba9d37` |
+
+## Deterministic Suite
+
+`uv run --python 3.12 python -m unittest discover -v` → **165 tests PASS**.
+New suites: `test_run_state`, `test_state_store`, `test_queue_cli`,
+`test_cancel`.
+
+## Live Queued Read-Only Run (Real Provider)
+
+Temporary fixture repository + temporary config (state.db and run records
+kept outside the user's global directory):
+
+| Field          | Value                                            |
+| -------------- | ------------------------------------------------ |
+| Run identifier | `f0311424dbf84ef492c2514b57c2b50d`              |
+| Flow           | `submit` → pending row+evidence → `drain`        |
+| Lifecycle      | pending → running → ready-for-review             |
+| Outcome        | `read-only`                                      |
+| Provider       | CC-Switch current (`api.minimaxi.com`)           |
+
+Post-run assertions executed by an independent checker:
+
+- Fresh `StateStore` instance (restart semantics) sees the final lifecycle;
+  started_at/finished_at recorded; worker pid cleared after finish.
+- ONE evidence directory carries both the submit-time `request.json` and
+  the execution-time result/metadata/tests/manifest — the queue never
+  forks a second identity (regression `fix 4ba9d37` locks this).
+- SHA-256 manifest re-verified digest-by-digest.
+- Event timeline includes `run-created`, `executor-attached`,
+  `symlink-scan-passed`, `worker-started/finished`, terminal `read-only`.
+
+## Crash & Cancellation Semantics
+
+Covered deterministically (`test_state_store`, `test_queue_cli`,
+`test_cancel`): interrupted runners become blocked `runner-interrupted`
+via injected dead-pid probe and are surfaced by `doctor`; cancel of a
+live runner terminates its dedicated process group only (never the
+operator's session) with worktree/evidence preserved; ready-for-review
+cancellations record discard intent without touching artifacts.
+
+## Notes / Deviations Recorded
+
+- V1.5 entry-gate usage data (50 queued runs, ≥20% parallelizable) is a
+  real-usage requirement still to be collected; infrastructure ships now
+  per owner instruction.
+
+---
+
 # Verified V1.2 — Operational Hardening
 
 ## Verification Metadata

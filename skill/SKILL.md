@@ -133,6 +133,26 @@ loop explicitly:
 Never bypass these steps with a direct `git merge` of the worker branch --
 doing so skips exactly the checks the router exists to provide.
 
+## Queue-based delegation (V1.4)
+
+When several bounded tasks are ready at once, prefer submitting them and
+letting a single drainer process them in order instead of blocking on one
+call:
+
+```sh
+printf '%s' '{...task json..., "priority": 5}' | claude-worker-router submit
+claude-worker-router queue --json          # inspect backlog
+claude-worker-router drain                 # sequential single-worker execution
+claude-worker-router cancel RUN_ID         # explicit abandonment only
+```
+
+Rules that survive from interactive delegation: same JSON contract, same
+isolation, same evidence, same provider neutrality. A crashed drain never
+retries itself — interrupted runs become blocked (`runner-interrupted`) and
+only a NEW run re-executes work. Cancelling is user-visible control, not an
+error path; report it as such. V1.4 stays strictly sequential; concurrent
+execution does not exist until V1.5 earns it with real usage data.
+
 ## Per-task overrides
 
 - Honor explicit per-task user instructions:

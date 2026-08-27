@@ -58,6 +58,28 @@ SHA-256 manifest no longer matches. There is no rebase, force push, or merge
 commit — if the base moved, Codex decides what to do. Evidence directories
 are permanent records; cleanup never deletes them.
 
+## Queue and cancellation (V1.4)
+
+For bursty work you can decouple submission from execution:
+
+```sh
+printf '%s' '{...task json...}' | claude-worker-router submit   # -> {"run_id","lifecycle":"pending"}
+claude-worker-router queue [--state pending|running|...|all] [--json]
+claude-worker-router drain [--once]     # single worker, strictly sequential
+claude-worker-router cancel RUN_ID      # pending / running / ready-for-review
+```
+
+`submit` accepts the same JSON as stdin mode plus optional `priority`
+(higher drains first) and `parent_run_id`; both live only in the state
+database and never enter evidence. Lifecycle (`pending → running →
+ready-for-review/integrated/blocked/cancelled`) is tracked in SQLite at
+`state.db` next to your run records; restarts keep every state. A drainer
+that died mid-run is surfaced by `doctor` as `queue-health` warning and
+moved to blocked `runner-interrupted` on the next drain — re-execution
+always requires a new run id. Cancelling a running task terminates the
+worker's own process group (never your shell) while keeping its worktree
+and evidence intact.
+
 ## Safety model
 
 The selected Claude Code provider is manual-only. Do not include `model`,
