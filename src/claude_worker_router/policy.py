@@ -119,3 +119,129 @@ def merge_policy(
             global_policy.sandbox_required or project_policy.sandbox_required
         ),
     )
+
+
+# --------------------------------------------------------------------------
+# Task 12: loaders and the effective-policy fold
+
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+
+def default_global_policy_path() -> Path:
+    """Canonical global policy location under the user's home."""
+    return Path.home() / ".codex/model-router/policy.toml"
+
+
+PROJECT_POLICY_RELATIVE = Path(".claude-worker-router") / "policy.toml"
+
+
+def load_policy_file(
+    path: Path, defaults: RouterPolicy | None = None
+) -> RouterPolicy:
+    """Parse one policy TOML strictly; unknown keys are hard errors."""
+    path = Path(path)
+    raw = path.read_bytes()
+    data = tomllib.loads(raw.decode("utf-8"))
+
+    known_tables = {"limits", "paths"}
+    for key in data:
+        if key not in known_tables and key != "sandbox_required":
+            raise ValueError(f"unknown policy key: {key!r} in {path}")
+
+    limits = data.get("limits", {})
+    if not isinstance(limits, dict):
+        raise ValueError(f"[limits] must be a table in {path}")
+    numeric_defaults = defaults or RouterPolicy(
+        max_turns=1,
+        timeout_seconds=1,
+        max_changed_files=1,
+        max_diff_lines=1,
+    )
+    numerics = {}
+    for name in ("max_turns", "timeout_seconds", "max_changed_files", "max_diff_lines"):
+        if name in limits:
+            numerics[name] = limits[name]
+        else:
+            numerics[name] = getattr(numeric_defaults, name)
+    for key in limits:
+        if key not in numerics:
+            raise ValueError(f"unknown [limits] key: {key!r} in {path}")
+
+    paths_table = data.get("paths", {})
+    if not isinstance(paths_table, dict):
+        raise ValueError(f"[paths] must be a table in {path}")
+    deny = paths_table.get("deny", ())
+    if "deny" in paths_table:
+        if not isinstance(deny, list) or not all(isinstance(d, str) for d in deny):
+            raise ValueError(f"paths.deny must be a list of strings in {path}")
+    for key in paths_table:
+        if key != "deny":
+            raise ValueError(f"unknown [paths] key: {key!r} in {path}")
+
+    sandbox_required = data.get("sandbox_required", False)
+    if not isinstance(sandbox_required, bool):
+        raise ValueError(f"sandbox_required must be a boolean in {path}")
+
+    return RouterPolicy(
+        **numerics,
+        deny_paths=tuple(deny),
+        sandbox_required=sandbox_required,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedPolicies:
+    base_policy: RouterPolicy
+    global_policy: RouterPolicy | None
+    project_policy: RouterPolicy | None
+    global_path: Path | None
+    project_path: Path | None
+    effective: EffectivePolicy
+
+
+def resolve_effective_policy(
+    base_policy: RouterPolicy,
+    global_path: Path | None,
+    repository: Path | None,
+) -> ResolvedPolicies:
+    """Fold config-floor ← global file ← project file; tighten-only each step.
+
+    Missing files are simply absent layers. A project that tries to relax
+    the *already resolved* global layer raises immediately.
+    """
+    effective = merge_policy(base_policy, None)
+    loaded_global = None
+    loaded_project = None
+    used_global_path = None
+    used_project_path = None
+
+    if global_path is not None and Path(global_path).is_file():
+        loaded_global = load_policy_file(global_path, defaults=base_policy)
+        effective = merge_policy(effective, loaded_global)
+        used_global_path = Path(global_path)
+
+    if repository is not None:
+        project_path = Path(repository) / PROJECT_POLICY_RELATIVE
+        if project_path.is_file():
+            floor = EffectivePolicy(
+                max_turns=effective.max_turns,
+                timeout_seconds=effective.timeout_seconds,
+                max_changed_files=effective.max_changed_files,
+                max_diff_lines=effective.max_diff_lines,
+                deny_paths=effective.deny_paths,
+                sandbox_required=effective.sandbox_required,
+            )
+            loaded_project = load_policy_file(project_path, defaults=floor)
+            effective = merge_policy(effective, loaded_project)
+            used_project_path = project_path
+
+    return ResolvedPolicies(
+        base_policy=base_policy,
+        global_policy=loaded_global,
+        project_policy=loaded_project,
+        global_path=used_global_path,
+        project_path=used_project_path,
+        effective=effective,
+    )
