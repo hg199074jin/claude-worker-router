@@ -279,6 +279,28 @@ def execute_task(
             return _finish_result(config, run_id, request, result, writer, metadata)
         from dataclasses import replace as _replace
 
+        # Profile commands face the SAME allowlist preflight as inline
+        # commands -- before any worker is invoked (design invariant:
+        # "binaries outside the allowlist are rejected before the worker
+        # is called").
+        disallowed_profile_binaries = sorted(
+            {
+                command.argv[0]
+                for command in profile.commands
+                if command.argv[0] not in config.allowed_test_binaries
+            }
+        )
+        if disallowed_profile_binaries:
+            message = (
+                "test binaries are not in the allowlist: "
+                + ", ".join(disallowed_profile_binaries)
+            )
+            record_event(
+                "test-binary-not-allowed", source="profile", detail=message
+            )
+            _set_escalation(result, "test-binary-not-allowed", message)
+            return _finish_result(config, run_id, request, result, writer, metadata)
+
         request = _replace(
             request,
             test_commands=tuple(profile.commands),

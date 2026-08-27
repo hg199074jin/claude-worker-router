@@ -201,3 +201,37 @@ class ProfileExecutorTests(unittest.TestCase):
         self.assertEqual(result.status, "escalated")
         self.assertEqual(result.escalation_reason, "test-profile-unknown")
         self.assertEqual(count, 0)
+
+
+class ProfileAllowlistTests(unittest.TestCase):
+    """Regression (review C3): profile binaries face the same preflight."""
+
+    def test_profile_with_disallowed_binary_never_invokes_worker(self) -> None:
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="profiles-allow-"))
+        from tests.helpers import init_repository, seed_smoke_test
+
+        repository = init_repository(tmp / "allow-repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                # harness allowlist is ("uv",); "npm" is not allowed
+                test_profiles_config={
+                    "npm-suite": ((("npm", "test"),), False),
+                },
+                test_profile_name="npm-suite",
+            )
+            result = outcome.result
+            calls = outcome.invocation_count
+        finally:
+            shutil.rmtree(tmp, True)
+
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "test-binary-not-allowed")
+        self.assertIn("npm", result.summary)
+        self.assertEqual(calls, 0)
+        self.assertIsNone(result.commit)
