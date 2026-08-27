@@ -286,6 +286,15 @@ def execute_task(
         )
 
     effective = resolved.effective
+
+    from .platform import macos_sandbox as _sbx
+
+    if effective.sandbox_required and not _sbx.is_sandbox_enforced():
+        detail = str(_sbx.SandboxUnavailable())
+        record_event("sandbox-unavailable", detail=detail)
+        _set_escalation(result, "sandbox-unavailable", detail)
+        return _finish_result(config, run_id, request, result, writer, metadata)
+
     metadata["global_policy_hash"] = resolved.global_fingerprint
     metadata["project_policy_hash"] = resolved.project_fingerprint
 
