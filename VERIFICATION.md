@@ -1,3 +1,106 @@
+# Claude Worker Router — Verification Records
+
+The newest record is at the top; earlier records remain below as history.
+
+# Verified V1.2 — Operational Hardening
+
+## Verification Metadata
+
+- Verification date: 2026-08-27
+- Branch: `v1-2-operational-hardening`
+- Task commits (TDD, one commit per task):
+
+| Task | Subject                                              | Commit    |
+| ---- | ---------------------------------------------------- | --------- |
+| 0    | docs: evolution design + implementation plan          | `5fdd75d` |
+| 1    | refactor: backward-compatible CLI command dispatch    | `660ea96` |
+| 2    | feat: structured run evidence                         | `21522b2` |
+| 3    | feat: immutable git base identity                     | `446f0a9` |
+| 4    | feat: router doctor diagnostics                       | `eae9366` |
+| 5    | feat: run history inspection                          | `1827869` |
+| 6    | feat: reject unsafe worker symlinks                   | `9caf312` |
+| 7    | feat: deny worker binary changes by default           | `02d3488` |
+| 8    | feat: explicit verified integration                   | `023964b` |
+| 9    | feat: manage worker worktree lifecycle                | `9d4a10e` |
+
+## Deterministic Suite
+
+Command:
+
+```
+uv run --python 3.12 python -m unittest discover -v
+```
+
+Result: **130 tests, all PASS**.
+
+New suites: `test_cli_commands`, `test_evidence`, `test_doctor`,
+`test_run_store`, `test_safety`, `test_integration`, `test_cleanup`.
+
+## Doctor On The Real Machine
+
+```
+claude-worker-router doctor --repo /Volumes/ORICO/Projects/claude-worker-router
+✓ python-runtime / git-executable / claude-executable (2.1.234)
+✓ provider-routing: endpoint=api.minimaxi.com model=MiniMax-M3[1M] fingerprint=471b40...
+✓ run-records-storage / test-binary:uv / test-binary:python3 / test-binary:npm
+✓ repository-branch: v1-2-operational-hardening
+! repository-clean: uncommitted entries reported while docs were being written
+READY WITH WARNINGS (exit 1)
+```
+
+Note: the dirty-checkout warning fired exactly as designed while this
+document itself had pending changes.
+
+## Bounded Live Lifecycle (New Provider Call)
+
+A fresh temporary fixture repository (the historical failing
+`compute_price` discount task) ran both modes against the CC-Switch-selected
+provider, then went through the complete V1.2 review lifecycle:
+
+| Field           | Value                                            |
+| --------------- | ------------------------------------------------ |
+| Run identifier  | `5db23a2dfa5c4b3bb55fad4fdbe090af`              |
+| Read-only run   | `033949b758944f44ab4974a5f104bde7` (`read-only`) |
+| Status          | `ready-for-review`                              |
+| Attempts        | 1                                               |
+| Base SHA        | equals the pre-run baseline commit               |
+| Diff lines      | 2                                                |
+| Worker commit   | `26d28c6e37c50ee3f82e8555d97f7f7945fa6e38`      |
+| Provider        | `api.minimaxi.com` / `MiniMax-M3[1M]`           |
+
+Main checkout was untouched before and after the worker call; the fix was
+verified inside the isolated worktree only.
+
+### Full Review Lifecycle Against The Live Run
+
+1. `list` surfaced the new run newest-first. Pre-V1.2 records lacking
+   `metadata.json` were skipped with warnings instead of breaking listing.
+2. `show RUN_ID` rendered metadata, base SHA, attempts, tests, diff size,
+   and escalation fields.
+3. `integrate RUN_ID` fast-forwarded main to the worker commit after its
+   preflight passed (clean checkout, HEAD == base SHA, manifest verified,
+   tests green). `metadata.integrated_sha` == merged HEAD.
+4. `cleanup RUN_ID` removed only the worktree and branch; the evidence
+   directory stayed intact with every manifest digest re-verified as
+   matching.
+
+Observed append-only event timeline for the run:
+
+```
+run-created → symlink-scan-passed → worker-started → worker-finished →
+tests-started → tests-passed → ready-for-review → integration-started →
+integration-completed → cleanup-completed
+```
+
+## Token Handling Statement (V1.2)
+
+Evidence files carry redacted provider routing data only. A repository-wide
+credential scan found no token-like values; the only "secret" strings are
+intentional fixtures in deterministic tests that assert their absence from
+written evidence.
+
+---
+
 # Verified V1.1 — Claude Code Worker Router
 
 This document records the end-to-end evidence for the hardened V1.1 router.

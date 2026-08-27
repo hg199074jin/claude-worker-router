@@ -81,6 +81,18 @@ Codex remains the owner of the work.
   creating an edit worktree, so local setup failures do not leave unused
   branches behind. Configure the command as a bare executable name such as
   `claude` or as an absolute path, never as a relative path containing `/`.
+- Before the first worker call of a session (or after any environment
+  change), prefer `claude-worker-router doctor` (optionally with `--repo`)
+  to confirm the machine is READY; it exits 0 when healthy, 1 with
+  warnings, 2 when unusable.
+- Tracked symlinks are scanned before any worker invocation: a symlink that
+  resolves outside the repository, is broken, or forms a cycle fails closed
+  (`external-symlink-denied`) without invoking the worker. In edit mode a
+  link inside `allowed_paths` must also resolve inside them.
+- Binary changes are denied by default. If the worker adds, modifies, or
+  deletes a binary file the run escalates with `binary-change-denied`,
+  which takes precedence over scope verdicts because diff-line budgets are
+  meaningless for binaries.
 - Executor-run tests receive only a small non-secret environment allowlist.
   Tasks whose tests require credentials or sensitive host access stay with
   Codex under the hard security gate.
@@ -91,9 +103,35 @@ Codex remains the owner of the work.
   user direction.
 - Treat `worker-permission-denied`, `worker-turn-limit`, `worker-timeout`,
   `worker-output-invalid`, `worker-cli-failed`, `git-measure-failed`,
-  `test-launch-failed`, `test-timeout`, `evidence-write-failed`, and path-scope
+  `test-launch-failed`, `test-timeout`, `evidence-write-failed`,
+  `binary-change-denied`, `external-symlink-denied`, and path-scope
   failures as distinct takeover reasons. Do not retry them as generic provider
   failures.
+
+## Post-review lifecycle (V1.2)
+
+A `ready-for-review` result is *not* finished work. Codex must close the
+loop explicitly:
+
+1. Inspect the run: `claude-worker-router list [--repo ...]` and
+   `claude-worker-router show RUN_ID [--json]`. Evidence lives under
+   `run_records/RUN_ID/` with metadata, tests, the full diff patch,
+   an append-only event timeline, and a SHA-256 manifest.
+2. Review the recorded diff and test evidence.
+3. Get explicit user approval before touching main.
+4. Integrate only through `claude-worker-router integrate RUN_ID`. Its
+   preflight refuses dirty checkouts (`integration-dirty-checkout`),
+   moved bases (`integration-base-diverged`), failed tests, evidence
+   tampering, and missing worker branches. Integration is exclusively a
+   fast-forward merge; there is no rebase, no force push, and no conflict
+   auto-resolution.
+5. Clean up with `claude-worker-router cleanup RUN_ID`. It removes only the
+   isolation artifacts and never touches evidence. An unintegrated change
+   requires an explicit `--discard`; `cleanup --stale` reports runs older
+   than 168 hours instead of deleting anything silently.
+
+Never bypass these steps with a direct `git merge` of the worker branch --
+doing so skips exactly the checks the router exists to provide.
 
 ## Per-task overrides
 

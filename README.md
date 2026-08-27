@@ -27,9 +27,36 @@ that current configuration.
 - Enforces repository-relative `allowed_paths`, change budgets, and approved
   test commands.
 - Runs approved tests itself with a minimal, non-secret environment.
-- Captures a redacted provider fingerprint and a per-run evidence record.
+- Records the immutable base SHA a worker change was built on.
+- Fails closed on unsafe tracked symlinks (`external-symlink-denied`) before
+  the worker is invoked, and denies binary changes by default
+  (`binary-change-denied`).
+- Captures redacted provider fingerprints plus a per-run evidence directory:
+  request, result, metadata, tests, the full diff patch, an append-only
+  event timeline, and a SHA-256 integrity manifest.
 - Returns structured escalation reasons instead of silently retrying with a
   different provider.
+
+## Run management commands
+
+Beyond the stdin executor, V1.2 ships five subcommands that share one core:
+
+```sh
+claude-worker-router doctor [--repo PATH] [--json]  # diagnose the environment (0=READY 1=warnings 2=NOT READY)
+claude-worker-router list [--repo ...] [--status ...] [--limit N] [--json]
+claude-worker-router show RUN_ID [--json]           # review one run's evidence summary
+claude-worker-router integrate RUN_ID               # verified fast-forward of an approved run
+claude-worker-router cleanup RUN_ID [--discard]     # drop isolation artifacts; evidence is kept
+claude-worker-router cleanup --stale                # report runs older than 168 hours
+```
+
+The normal lifecycle for an edit task is:
+`ready-for-review` → `show` → human review → explicit approval →
+`integrate` → `cleanup`. Integration refuses dirty main checkouts,
+moved bases (`integration-base-diverged`), failing tests, or evidence whose
+SHA-256 manifest no longer matches. There is no rebase, force push, or merge
+commit — if the base moved, Codex decides what to do. Evidence directories
+are permanent records; cleanup never deletes them.
 
 ## Safety model
 
@@ -124,6 +151,9 @@ includes an `escalation_reason` for Codex to take over.
 - `max_changed_files` and `max_diff_lines`: edit budget limits.
 - `allowed_test_binaries`: the only executables the router will use for test
   commands.
+- `binary_edit_policy`: only `"deny"` is accepted in V1.2 — worker runs that
+  touch any binary file escalate instead of passing review with an
+  unmeasurable diff.
 
 Use small limits and narrow path scopes. If a task cannot be verified with a
 bounded diff and a project-local test command, keep it with Codex.

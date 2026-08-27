@@ -22,8 +22,34 @@ Claude Code 中当前选定的模型，并保留可审查的执行证据。对�
 - 编辑任务创建隔离 worktree；只读任务无法编辑文件。
 - 强制执行仓库相对路径的 `allowed_paths`、变更预算和已批准的测试命令。
 - 由执行器以最小、非敏感的环境运行测试。
-- 保存脱敏的提供商指纹和每次运行的证据记录。
+- 记录 worker 修改所基于的不可变 base SHA。
+- 在调用 worker 之前对 Git 跟踪的符号链接 fail closed
+  （`external-symlink-denied`）；默认拒绝任何二进制文件改动
+  （`binary-change-denied`）。
+- 保存脱敏的提供商指纹和完整的每次运行证据目录：request、result、
+  metadata、tests、完整 diff 补丁、append-only 事件时间线，以及 SHA-256
+  完整性清单。
 - 返回结构化的升级原因，而不是静默地换一个提供商重试。
+
+## Run 管理命令
+
+除 stdin 执行器外，V1.2 提供五个共用同一核心的子命令：
+
+```sh
+claude-worker-router doctor [--repo PATH] [--json]  # 环境诊断（0=就绪 1=有警告 2=不可用）
+claude-worker-router list [--repo ...] [--status ...] [--limit N] [--json]
+claude-worker-router show RUN_ID [--json]           # 复核单次 run 的证据摘要
+claude-worker-router integrate RUN_ID               # 通过校验后 fast-forward 集成
+claude-worker-router cleanup RUN_ID [--discard]     # 清理隔离产物；证据永久保留
+claude-worker-router cleanup --stale                # 报告超过 168 小时的陈旧 run
+```
+
+编辑任务的标准生命周期为：`ready-for-review` → `show` → 人工审查 →
+显式批准 → `integrate` → `cleanup`。integrate 的前置检查会拒绝脏的主工作区
+（`integration-dirty-checkout`）、基点漂移（`integration-base-diverged`）、
+未通过的测试以及证据哈希不一致的情况。它只做 fast-forward 合并——没有
+rebase、没有强推、也不会制造 merge commit；如果主分支已前进，由 Codex
+决定下一步。证据目录是永久记录，cleanup 永远不会删除它们。
 
 ## 安全模型
 
@@ -111,6 +137,8 @@ printf '%s' '{
 - `max_turns` 和 `timeout_seconds`：单次 worker 运行的硬上限。
 - `max_changed_files` 和 `max_diff_lines`：编辑预算限制。
 - `allowed_test_binaries`：路由器允许用于测试命令的可执行文件白名单。
+- `binary_edit_policy`：V1.2 仅接受 `"deny"`——一旦 worker 增改删任何
+  二进制文件，运行将直接升级，而不是带着无法度量的 diff 进入审查。
 
 建议保持较小的限制和狭窄的路径范围。若一个任务无法以受控 diff 和项目内
 测试命令验证，就应继续由 Codex 处理。
