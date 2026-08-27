@@ -32,6 +32,7 @@ from .provider import (
     fingerprint_provider,
     read_provider_snapshot,
 )
+from .safety import ExternalSymlinkError, validate_symlinks
 
 
 #: The complete tool whitelist exposed to the Claude worker. ``Bash`` is
@@ -211,6 +212,19 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     result.base_sha = _resolve_head(request.repository)
     metadata["base_branch"] = result.base_branch
     metadata["base_sha"] = result.base_sha
+
+    # Tracked symlinks are scanned on the source repository before any
+    # isolation or worker work so escape hatches fail closed up front.
+    if _is_git_repo(request.repository):
+        try:
+            validate_symlinks(
+                request.repository, request.allowed_paths, request.mode
+            )
+        except ExternalSymlinkError as exc:
+            record_event("symlink-scan-denied", detail=str(exc))
+            _set_escalation(result, "external-symlink-denied", str(exc))
+            return _finish_result(config, run_id, request, result, writer, metadata)
+        record_event("symlink-scan-passed")
 
     workspace = _prepare_workspace(request, run_id, result)
 
