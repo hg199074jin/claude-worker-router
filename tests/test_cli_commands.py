@@ -140,13 +140,23 @@ class LegacyStdinModeTests(unittest.TestCase):
 class SubcommandDispatchTests(unittest.TestCase):
     """Known subcommands route through the dispatcher; placeholders fail closed."""
 
-    def test_all_v12_subcommands_are_wired(self) -> None:
-        # Every V1.2 command has a real handler; nothing is left in the
+    def test_all_subcommands_are_wired(self) -> None:
+        # Every shipped command has a real handler; nothing is left in the
         # placeholder pool. Their behavior lives in dedicated suites
-        # (test_doctor / test_run_store / test_integration / test_cleanup).
+        # (test_doctor / test_run_store / test_integration / test_cleanup /
+        # test_queue_cli).
         self.assertEqual(
             set(cli._COMMAND_HANDLERS),
-            {"doctor", "list", "show", "integrate", "cleanup"},
+            {
+                "doctor",
+                "list",
+                "show",
+                "integrate",
+                "cleanup",
+                "submit",
+                "queue",
+                "drain",
+            },
         )
 
     def test_cleanup_without_target_or_stale_flag_is_refused(self) -> None:
