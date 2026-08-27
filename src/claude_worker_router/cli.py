@@ -126,11 +126,6 @@ def _run_doctor_command_checks(
     return 1 if overall == "warning" else 2
 
 
-def _noop_command(args: argparse.Namespace, config: RouterConfig) -> int:
-    print(f"error: '{args.command}' is not implemented yet", file=sys.stderr)
-    return 2
-
-
 def _list_command(args: argparse.Namespace, config: RouterConfig) -> int:
     """List recorded runs, newest first."""
     from .run_store import RunStore
@@ -283,13 +278,94 @@ def _integrate_command(args: argparse.Namespace, config: RouterConfig) -> int:
     return 0
 
 
-#: Placeholder handlers; each V1.2 task replaces its own entry.
+def _cleanup_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Remove one run's isolation artifacts or report stale candidates."""
+    from .cleanup import CleanupError, CleanupRefused, find_stale_runs
+
+    if args.stale:
+        if args.run_id or args.discard:
+            print("--stale cannot be combined with RUN_ID or --discard", file=sys.stderr)
+            return 2
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=args.stale_hours)
+        report = find_stale_runs(config, cutoff=cutoff)
+
+        def entry_line(entry, tag: str) -> str:
+            return f"[{tag}] {entry.run_id} {entry.detail}"
+
+        lines = [entry_line(e, "auto") for e in report.auto_candidates]
+        lines += [entry_line(e, "report") for e in report.report_only]
+        if args.json:
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "auto": [vars_like(e) for e in report.auto_candidates],
+                        "report": [vars_like(e) for e in report.report_only],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            return 0
+        sys.stdout.write("\n".join(lines) + ("\n" if lines else "") or "(no stale runs)\n")
+        if not lines:
+            sys.stdout.write("(no stale runs)\n")
+        sys.stdout.write(
+            f"summary: {len(report.auto_candidates)} auto-cleanable, "
+            f"{len(report.report_only)} need decisions\n"
+        )
+        return 0
+
+    if not args.run_id:
+        print("cleanup requires RUN_ID or --stale", file=sys.stderr)
+        return 2
+    try:
+        validate_run_id(args.run_id)
+    except ValueError as exc:
+        print(f"invalid run id: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        from .cleanup import cleanup_run
+
+        outcome = cleanup_run(args.run_id, config, discard=args.discard)
+    except CleanupRefused as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except CleanupError as exc:
+        print(f"cleanup failed: {exc}", file=sys.stderr)
+        return 2
+
+    bits = []
+    if outcome.already_cleaned:
+        bits.append("already cleaned")
+    else:
+        if outcome.removed_worktree:
+            bits.append("worktree removed")
+        if outcome.removed_branch:
+            bits.append("branch removed")
+    if outcome.discarded:
+        bits.append("discarded")
+    for note in outcome.notes:
+        bits.append(note)
+    sys.stdout.write(f"cleanup {args.run_id}: {'; '.join(bits)}\n")
+    return 0
+
+
+def vars_like(entry) -> dict:
+    return {"run_id": entry.run_id, "detail": entry.detail}
+
+
+#: Command handlers; all five V1.2 commands are implemented.
 _COMMAND_HANDLERS: dict[str, object] = {
     "doctor": _doctor_command,
     "list": _list_command,
     "show": _show_command,
     "integrate": _integrate_command,
-    "cleanup": _noop_command,
+    "cleanup": _cleanup_command,
 }
 
 
@@ -331,8 +407,28 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     integrate = subparsers.add_parser("integrate", help="integrate a reviewed run")
     integrate.add_argument("run_id")
-    cleanup = subparsers.add_parser("cleanup", help="remove a finished run's worktree")
-    cleanup.add_argument("run_id")
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help="remove one run's worktree, or list stale runs with --stale",
+    )
+    cleanup.add_argument("run_id", nargs="?", help="run to clean up")
+    cleanup.add_argument(
+        "--discard",
+        action="store_true",
+        help="explicitly abandon an unintegrated worker change",
+    )
+    cleanup.add_argument(
+        "--stale", action="store_true", help="list stale runs instead of cleaning"
+    )
+    cleanup.add_argument(
+        "--stale-hours",
+        type=int,
+        default=168,
+        help="staleness threshold in hours (default: 168)",
+    )
+    cleanup.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON (--stale only)"
+    )
 
     return parser.parse_args(argv)
 

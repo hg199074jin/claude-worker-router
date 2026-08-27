@@ -140,26 +140,30 @@ class LegacyStdinModeTests(unittest.TestCase):
 class SubcommandDispatchTests(unittest.TestCase):
     """Known subcommands route through the dispatcher; placeholders fail closed."""
 
-    def test_placeholder_subcommands_return_nonzero_until_implemented(self) -> None:
-        # Kept so the dispatcher never grows a silent success for an unbuilt
-        # command. ``doctor``(T4), ``list``/``show``(T5), ``integrate``(T8)
-        # have all graduated to their own suites.
-        for argv in (
-            ["cleanup", "some-run-id"],
-        ):
-            with self.subTest(argv=argv):
-                with patch.object(cli, "load_config", return_value="sentinel-config"):
-                    code, _, err = _run_main(argv)
-                self.assertNotEqual(code, 0)
-                self.assertNotEqual(err.strip(), "")
+    def test_all_v12_subcommands_are_wired(self) -> None:
+        # Every V1.2 command has a real handler; nothing is left in the
+        # placeholder pool. Their behavior lives in dedicated suites
+        # (test_doctor / test_run_store / test_integration / test_cleanup).
+        self.assertEqual(
+            set(cli._COMMAND_HANDLERS),
+            {"doctor", "list", "show", "integrate", "cleanup"},
+        )
+
+    def test_cleanup_without_target_or_stale_flag_is_refused(self) -> None:
+        with patch.object(cli, "load_config", return_value="sentinel-config"):
+            code, _, err = _run_main(["cleanup"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("RUN_ID or --stale", err)
 
     def test_config_flag_is_accepted_before_a_subcommand(self) -> None:
-        # Task 1 only guarantees argument plumbing; the placeholder still
-        # exits non-zero even with an explicit --config value.
-        with patch.object(cli, "load_config", return_value="sentinel-config"):
-            code, _, err = _run_main(["--config", "/tmp/config.toml", "cleanup", "abc"])
-        self.assertNotEqual(code, 0)
-        self.assertNotEqual(err.strip(), "")
+        # ``--config`` precedes every subcommand; an unresolvable config
+        # must fail gracefully with exit 2 (no argparse/SystemExit crash),
+        # proving the flag reached the dispatcher for a subcommand.
+        code, _, err = _run_main(
+            ["--config", "/definitely/missing/config.toml", "cleanup", "abc"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("config error", err)
 
     def test_unknown_subcommand_fails_with_usage_error(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
@@ -177,12 +181,6 @@ class SubcommandDispatchTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             with redirect_stderr(io.StringIO()):
                 cli.main(["integrate"])
-        self.assertNotEqual(ctx.exception.code, 0)
-
-    def test_cleanup_requires_run_id_argument(self) -> None:
-        with self.assertRaises(SystemExit) as ctx:
-            with redirect_stderr(io.StringIO()):
-                cli.main(["cleanup"])
         self.assertNotEqual(ctx.exception.code, 0)
 
 
