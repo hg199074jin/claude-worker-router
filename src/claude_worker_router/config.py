@@ -92,6 +92,20 @@ def load_config(path: Path) -> RouterConfig:
     else:
         raise ValueError("claude_settings must be a non-empty path string")
 
+    raw_concurrency = _optional("max_concurrency")
+    if raw_concurrency is None:
+        max_concurrency = 1
+    elif (
+        isinstance(raw_concurrency, int)
+        and not isinstance(raw_concurrency, bool)
+        and raw_concurrency in (1, 2)
+    ):
+        max_concurrency = raw_concurrency
+    else:
+        raise ValueError(
+            f"max_concurrency must be 1 or 2 (got {raw_concurrency!r})"
+        )
+
     raw_binary_policy = _optional("binary_edit_policy")
     if raw_binary_policy is None or raw_binary_policy == "deny":
         binary_edit_policy = "deny"
@@ -113,6 +127,7 @@ def load_config(path: Path) -> RouterConfig:
         test_output_limit_bytes=test_output_limit_bytes,
         claude_settings=claude_settings,
         binary_edit_policy=binary_edit_policy,
+        max_concurrency=max_concurrency,
     )
 
 

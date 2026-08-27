@@ -164,6 +164,7 @@ class RouterConfig:
     test_output_limit_bytes: int
     claude_settings: Path
     binary_edit_policy: str = "deny"
+    max_concurrency: int = 1
 
 
 @dataclass

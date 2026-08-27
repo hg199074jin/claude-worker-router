@@ -70,6 +70,40 @@ binary_edit_policy = "allow"
             with self.assertRaisesRegex(ValueError, 'must be "deny"'):
                 load_config(path)
 
+    def test_max_concurrency_defaults_to_one_and_caps_at_two(self):
+        import tempfile
+
+        def write_config(tmp: Path, value_line: str | None) -> Path:
+            path = tmp / "c.toml"
+            extra = value_line if value_line else ""
+            path.write_text(
+                """
+[worker]
+command = "claude"
+provider = "cc-switch-current"
+max_turns = 12
+timeout_seconds = 1200
+correction_limit = 1
+max_changed_files = 5
+max_diff_lines = 500
+allowed_test_binaries = ["uv"]
+"""
+                + extra,
+                encoding="utf-8",
+            )
+            return path
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            self.assertEqual(load_config(write_config(tmp, None)).max_concurrency, 1)
+            self.assertEqual(
+                load_config(write_config(tmp, "max_concurrency = 2\n")).max_concurrency,
+                2,
+            )
+            for bad in ("max_concurrency = 3\n", 'max_concurrency = "two"\n'):
+                with self.assertRaisesRegex(ValueError, "max_concurrency"):
+                    load_config(write_config(tmp, bad))
+
     def test_rejects_relative_worker_command_with_path_separator(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"

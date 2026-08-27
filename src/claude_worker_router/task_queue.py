@@ -17,7 +17,7 @@ import os
 import sys
 import uuid
 from typing import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import RouterConfig
@@ -206,6 +206,119 @@ def drain_once(
 
 PROVIDER_STOP_EXIT_CODE = 5
 
+import threading
+
+
+def _request_scope(evidence_path: str) -> tuple[tuple[str, ...], bool]:
+    """Read (allowed_paths-scope, exclusive) straight from stored evidence."""
+    try:
+        raw = (Path(evidence_path) / "request.json").read_text(encoding="utf-8")
+        data = json.loads(raw)
+        paths = tuple(data.get("allowed_paths") or ())
+        exclusive = bool(data.get("exclusive_tests", False))
+        return paths, exclusive
+    except (OSError, ValueError, TypeError):
+        # Unreadable scope fails closed: treat as maximally conflicting,
+        # never as freely parallelizable.
+        return ("**unreadable**",), True
+
+
+def _select_batch(
+    store: StateStore, config: RouterConfig, limit: int
+) -> list[dict[str, Any]]:
+    """Pick the next claimable rows: priority order, conflict-free pairing.
+
+    Conflict comparison happens inside a repository; rows from different
+    repositories never conflict (V1.5 design §44). Repository identity is
+    therefore prepended as the first scope component.
+    """
+    from .scheduler import paths_conflict
+
+    pending = sorted(
+        store.list_lifecycle(RunLifecycle.PENDING),
+        key=lambda r: (-int(r["priority"]), str(r["created_at"])),
+    )
+
+    chosen: list[dict[str, Any]] = []
+    chosen_scopes: list[tuple[str, ...]] = []
+
+    for row in pending:
+        if len(chosen) >= limit:
+            break
+        raw_repo = str(row.get("repository") or "?")
+        # Repository row stores whatever submit recorded; compare realpaths.
+        try:
+            import os as _os
+
+            repo_key = _os.path.realpath(raw_repo)
+        except OSError:
+            repo_key = raw_repo
+
+        scope, exclusive = _request_scope(str(row["evidence_path"]))
+        # Compose repository+path into ONE synthetic POSIX path so the
+        # pure prefix engine sees cross-repo scopes as disjoint trees.
+        import hashlib as _hl
+
+        repo_hash = _hl.sha1(repo_key.encode("utf-8")).hexdigest()[:16]
+        synthetic_root = f"/__router-repos/{repo_hash}"
+        full_tuple = tuple(
+            str(PurePosixPath(synthetic_root) / path) for path in scope
+        )
+        if exclusive and chosen:
+            continue  # exclusive needs an empty batch slot of its own
+        if any(paths_conflict(full_tuple, other) for other in chosen_scopes):
+            continue
+        chosen.append(row)
+        chosen_scopes.append(full_tuple)
+    return chosen
+
+
+def _claim_rows(
+    store: StateStore, rows: list[dict[str, Any]], *, provider_epoch: str | None
+) -> list[dict[str, Any]]:
+    """Atomically flip selected rows to running with the batch epoch."""
+    claimed = []
+    for row in rows:
+        with_store = store.get(row["run_id"])
+        if with_store and with_store["lifecycle"] == RunLifecycle.PENDING.value:
+            direct = store.claim_next(provider_epoch=provider_epoch)
+            # claim_next may surface a different row than requested if a
+            # concurrent drainer raced; loop-guard below handles reality.
+            if direct and direct["run_id"] != row["run_id"]:
+                continue
+            if direct:
+                claimed.append(direct)
+        if not claimed or claimed[-1]["run_id"] != row["run_id"]:
+            # fall back: the exact-row claim via state UPDATE guard
+            forced = _force_claim(store, row["run_id"], provider_epoch)
+            if forced:
+                claimed.append(forced)
+    return claimed
+
+
+def _force_claim(
+    store: StateStore, run_id: str, provider_epoch: str | None
+) -> dict[str, Any] | None:
+    import sqlite3 as _sq
+
+    try:
+        with _sq.connect(str(store.db_path)) as conn:
+            cur = conn.execute(
+                """
+                UPDATE runs SET lifecycle='running',
+                       pid=COALESCE(pid,pid),
+                       started_at=COALESCE(started_at, datetime('now')),
+                       provider_epoch=COALESCE(?,provider_epoch)
+                 WHERE run_id=? AND lifecycle='pending'
+                """,
+                (provider_epoch, run_id),
+            )
+            if cur.rowcount != 1:
+                return None
+        return store.get(run_id)
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def drain(
     config: RouterConfig,
@@ -213,7 +326,7 @@ def drain(
     once: bool = False,
     log=None,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Single-worker sequential drain guarded by a provider epoch.
+    """Provider-epoch guarded drain; concurrency bounded by configuration.
 
     Exit codes: 0 clean completion, 3 one-or-more blocked outcomes,
     5 dispatch stopped because the provider fingerprint changed.
@@ -221,85 +334,173 @@ def drain(
     log = log or sys.stdout
     reconcile_before_drain(config, out=log)
 
-    # The epoch is captured once at batch start; the very first task runs
-    # under it without a redundant re-check. Every FURTHER dispatch must
-    # survive a fresh fingerprint comparison or dispatch stops.
     provider_epoch = read_current_fingerprint(config)
 
-    def _stop(exit_code: int) -> tuple[int, list[dict[str, Any]]]:
+    def _finish(code: int, processed: list[dict[str, Any]]):
         blocked = sum(
             1
             for step in processed
             if step.get("lifecycle") == RunLifecycle.BLOCKED.value
         )
         print(f"summary: completed {len(processed)} run(s)", file=log)
-        if exit_code == 0 and blocked:
-            exit_code = 3
-        return exit_code, processed
+        if code == 0 and blocked:
+            code = 3
+        return code, processed
 
     processed: list[dict[str, Any]] = []
-    step = drain_once(config, provider_epoch=provider_epoch)
-    if not step.get("claimed"):
-        return _stop(0)
-    while True:
-        processed.append(step)
-        print(
-            f"completed {step['run_id']} -> {step['lifecycle']}"
-            + (f" ({step['outcome']})" if step["outcome"] else ""),
-            file=log,
-        )
-        if once:
-            return _stop(0)
 
-        current = read_current_fingerprint(config)
-        if current != provider_epoch:
-            remaining = len(list_backlog(config, state="pending"))
-            print(
-                f"dispatch stopped: provider changed since batch start "
-                f"(epoch {'set' if provider_epoch else 'none'} -> "
-                f"{'set' if current else 'none'}); "
-                f"{remaining} pending task(s) untouched; no automatic switch",
-                file=log,
-            )
-            return PROVIDER_STOP_EXIT_CODE, processed
-
+    if getattr(config, "max_concurrency", 1) == 1:
         step = drain_once(config, provider_epoch=provider_epoch)
         if not step.get("claimed"):
-            return _stop(0)
+            return _finish(0, processed)
+        while True:
+            processed.append(step)
+            print(
+                f"completed {step['run_id']} -> {step['lifecycle']}"
+                + (f" ({step['outcome']})" if step["outcome"] else ""),
+                file=log,
+            )
+            if once:
+                return _finish(0, processed)
 
+            current = read_current_fingerprint(config)
+            if current != provider_epoch:
+                remaining = len(list_backlog(config, state="pending"))
+                print(
+                    f"dispatch stopped: provider changed since batch start "
+                    f"(epoch {'set' if provider_epoch else 'none'} -> "
+                    f"{'set' if current else 'none'}); "
+                    f"{remaining} pending task(s) untouched; no automatic switch",
+                    file=log,
+                )
+                return PROVIDER_STOP_EXIT_CODE, processed
 
-def mark_integrated_sync(
-    run_id: str, config: RouterConfig, *, log=None
-) -> bool:
-    """Best-effort lifecycle sync after a successful integrate command.
+            step = drain_once(config, provider_epoch=provider_epoch)
+            if not step.get("claimed"):
+                return _finish(0, processed)
 
-    Runs that never went through ``submit`` (legacy stdin) get tracked
-    lazily here so *integrate 后状态准确* holds across entry points.
-    Failures never undo the integration itself; they surface as stderr
-    notes only.
-    """
-    from .run_store import RunStore
+    # ---- concurrency == 2: batched execution ---------------------------
+    import sys as _sys
+    print(f"[dbg] concurrency branch entered max={getattr(config,'max_concurrency',None)!r}", file=_sys.stderr)
+    store = open_store(config)
+    first_batch = True
+    results_lock = threading.Lock()
 
-    log = log or sys.stderr
-    try:
-        record = RunStore(config.run_records).load_run(run_id)
-        metadata = record.get("metadata") or {}
-        request = record.get("request") or {}
-        store = open_store(config)
-        row = store.ensure_row(
-            run_id=run_id,
-            repository=str(metadata.get("repository") or "?"),
-            mode=str(request.get("mode") or "edit"),
-            final_status="ready-for-review",
-            evidence_path=str(record.get("run_dir", "")),
+    while True:
+        if not first_batch:
+            current = read_current_fingerprint(config)
+            if current != provider_epoch:
+                remaining = len(list_backlog(config, state="pending"))
+                print(
+                    f"dispatch stopped: provider changed since batch start "
+                    f"(epoch {'set' if provider_epoch else 'none'} -> "
+                    f"{'set' if current else 'none'}); "
+                    f"{remaining} pending task(s) untouched; no automatic switch",
+                    file=log,
+                )
+                return PROVIDER_STOP_EXIT_CODE, processed
+
+        rows = (
+            [store.peek_next_pending()]
+            if once and not processed
+            else _select_batch(store, config, 2 - len(processed) % 2 or 2)
         )
-        if row["lifecycle"] == RunLifecycle.INTEGRATED.value:
-            return True
-        store.update_lifecycle(run_id, RunLifecycle.INTEGRATED)
-        return True
-    except Exception as exc:  # noqa: BLE001 - sync must not break integration UX
-        print(f"warning: state sync skipped: {exc}", file=log)
-        return False
+        rows = [r for r in rows if r]
+        if once:
+            rows = rows[:1]
+        if not rows:
+            return _finish(0, processed)
+
+        print(f"[dbg] selected {len(rows)} rows", file=_sys.stderr)
+        claimed_rows = _claim_rows(store, rows, provider_epoch=provider_epoch)
+        print(f"[dbg] claimed {len(claimed_rows)} rows", file=_sys.stderr)
+        first_batch = False
+
+        steps: dict[str, dict[str, Any]] = {}
+
+        def _run_one(row: dict[str, Any]) -> None:
+            from .state_store import StateTransitionError
+
+            try:
+                result = _execute_claim_row(row, config, store)
+                steps[row["run_id"]] = result
+            except Exception as exc:  # noqa: BLE001 - isolate worker crash per slot
+                print(f"worker thread error on {row['run_id']}: {exc!r}", file=sys.stderr)
+                try:
+                    store.finish(
+                        row["run_id"],
+                        lifecycle=RunLifecycle.BLOCKED,
+                        outcome="runner-crashed",
+                    )
+                except StateTransitionError:
+                    pass
+                steps[row["run_id"]] = {
+                    "claimed": True,
+                    "run_id": row["run_id"],
+                    "lifecycle": RunLifecycle.BLOCKED.value,
+                    "outcome": "runner-crashed",
+                    "escalation_reason": str(exc)[:200],
+                }
+
+        threads = [
+            threading.Thread(target=_run_one, args=(row,), daemon=False)
+            for row in claimed_rows
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for row in claimed_rows:
+            step = steps.get(row["run_id"])
+            if not step:
+                continue
+            processed.append(step)
+            print(
+                f"completed {step['run_id']} -> {step['lifecycle']}"
+                + (f" ({step['outcome']})" if step["outcome"] else ""),
+                file=log,
+            )
+        if once:
+            return _finish(0, processed)
+
+
+def _execute_claim_row(
+    row: dict[str, Any], config: RouterConfig, store: StateStore
+) -> dict[str, Any]:
+    """Execute an already-claimed row; mirrors drain_once's tail."""
+    from .state_store import StateTransitionError
+
+    def record_worker_child(child_pid: int) -> None:
+        try:
+            store.set_pid(row["run_id"], child_pid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    result = _execute_claimed(row, config, on_child_start=record_worker_child)
+    from .models import lifecycle_from_outcome
+
+    final_lifecycle = lifecycle_from_outcome(result.status)
+    try:
+        store.finish(run_id=row["run_id"], lifecycle=final_lifecycle, outcome=result.status)
+    except StateTransitionError:
+        step_row = store.get(row["run_id"]) or {}
+        return {
+            "claimed": True,
+            "run_id": row["run_id"],
+            "lifecycle": step_row.get("lifecycle", RunLifecycle.CANCELLED.value),
+            "outcome": step_row.get("outcome"),
+            "escalation_reason": result.escalation_reason,
+            "externally_finalized": True,
+        }
+    updated = store.get(row["run_id"]) or {}
+    return {
+        "claimed": True,
+        "run_id": row["run_id"],
+        "lifecycle": updated.get("lifecycle", final_lifecycle.value),
+        "outcome": result.status,
+        "escalation_reason": result.escalation_reason,
+    }
 
 
 class CancelRefused(RuntimeError):
@@ -422,3 +623,4 @@ def execute_single(config: RouterConfig) -> int:
     if step.get("lifecycle") == RunLifecycle.BLOCKED.value:
         return 3
     return 0
+
