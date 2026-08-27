@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+
+def _PATH_EXTENSIONS() -> str:
+    """A PATH that lets executor subprocesses locate ``uv``."""
+
+    existing = os.environ.get("PATH", "")
+    return os.pathsep.join(
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", existing]
+    )
 
 
 def _git(repository: Path, *args: str) -> None:

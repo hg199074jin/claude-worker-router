@@ -83,6 +83,34 @@ class GitWorkspace:
         _run_git(self.repository, "worktree", "remove", "--force", str(self.path))
         _run_git(self.repository, "branch", "-D", self.branch)
 
+    def render_patch(self) -> str:
+        """Render a best-effort textual patch of tracked and untracked edits.
+
+        Tracked changes come from ``git diff HEAD``. Untracked files get a
+        synthetic ``new file`` diff section so evidence survives worktree
+        cleanup. Binary untracked files are noted instead of inlined.
+        """
+        parts: list[str] = [_run_git(self.path, "diff", "HEAD").stdout]
+
+        untracked = _run_git(self.path, "ls-files", "--others", "--exclude-standard")
+        for rel in untracked.stdout.splitlines():
+            if not rel:
+                continue
+            header = (
+                f"diff --git a/{rel} b/{rel}\n"
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                f"+++ b/{rel}\n"
+            )
+            try:
+                text = (self.path / rel).read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                parts.append(f"{header}Binary file {rel} added\n")
+                continue
+            body = "".join(f"+{line}\n" for line in text.splitlines())
+            parts.append(header + body)
+        return "".join(parts)
+
 
 def _run_git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Invoke git with an explicit argv list and capture text output."""

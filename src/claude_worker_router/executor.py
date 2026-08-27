@@ -17,7 +17,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .config import RouterConfig
+from .evidence import EvidenceWriter, parse_utc_timestamp, utc_timestamp
 from .git_workspace import (
     DirtyCheckoutError,
     GitWorkspace,
@@ -122,6 +124,45 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     result = RunResult(run_id=run_id, status="escalated")
     result.provider = {"endpoint_host": "", "model": ""}
 
+    writer = EvidenceWriter(config.run_records, run_id)
+    metadata: dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "router_version": __version__,
+        "created_at": utc_timestamp(),
+        "worker_started_at": None,
+        "worker_finished_at": None,
+        "finished_at": None,
+        "duration_ms": 0,
+        "repository": str(request.repository),
+        "repository_realpath": os.path.realpath(request.repository),
+        "base_branch": None,
+        "base_sha": None,
+        "worker_branch": None,
+        "worker_commit": None,
+        "worktree": None,
+        "mode": request.mode.value,
+        "provider": {"endpoint_host": None, "model": None, "fingerprint": None},
+        "changed_files": [],
+        "diff_lines": 0,
+        "attempts": 0,
+        "final_status": None,
+        "escalation_reason": None,
+    }
+
+    def record_event(event: str, **fields: Any) -> None:
+        try:
+            writer.append_event(event, **fields)
+        except OSError:
+            # A lost timeline line must never abort the run itself.
+            pass
+
+    try:
+        writer.create_run(request)
+    except OSError as exc:
+        _set_escalation(result, "evidence-write-failed", str(exc))
+        return result
+
     disallowed_test_binaries = sorted(
         {
             command.argv[0]
@@ -136,7 +177,7 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             "test binaries are not in the allowlist: "
             + ", ".join(disallowed_test_binaries),
         )
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
 
     resolved_worker_command = _resolve_worker_command(config.command)
     if resolved_worker_command is None:
@@ -146,20 +187,25 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             "worker command must be a bare executable name or absolute path "
             f"and must be executable: {config.command}",
         )
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
     config = replace(config, command=resolved_worker_command)
 
     try:
         before_snapshot = read_provider_snapshot(config.claude_settings)
     except ProviderConfigError as exc:
         _set_escalation(result, "provider-config-error", str(exc))
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
 
+    before_fingerprint = fingerprint_provider(before_snapshot)
     result.provider = {
         "endpoint_host": before_snapshot.endpoint_host,
         "model": before_snapshot.model,
     }
-    before_fingerprint = fingerprint_provider(before_snapshot)
+    metadata["provider"] = {
+        "endpoint_host": before_snapshot.endpoint_host,
+        "model": before_snapshot.model,
+        "fingerprint": before_fingerprint,
+    }
 
     workspace = _prepare_workspace(request, run_id, result)
 
@@ -167,10 +213,17 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
     # edit target is unsafe: a dirty Git checkout or a non-Git directory. Stop
     # here so the worker loop never runs against an unsafe target.
     if workspace is None and result.escalation_reason is not None:
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
+
+    metadata["worktree"] = result.worktree
+    metadata["worker_branch"] = result.branch
 
     loop_result = _run_worker_loop(
-        request, config, workspace.path if workspace else request.repository, run_id
+        request,
+        config,
+        workspace.path if workspace else request.repository,
+        record_event,
+        metadata,
     )
     result.attempts = loop_result.attempts
     result.tests = loop_result.tests
@@ -201,6 +254,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
             _set_escalation(result, "git-measure-failed", str(exc))
 
+        try:
+            writer.write_diff(workspace.render_patch())
+        except (subprocess.CalledProcessError, OSError) as exc:
+            record_event("evidence-diff-unavailable", detail=str(exc))
+
+    metadata["changed_files"] = list(result.changed_files)
+    metadata["diff_lines"] = result.diff_lines
+
     try:
         after_snapshot = read_provider_snapshot(config.claude_settings)
         after_fingerprint = fingerprint_provider(after_snapshot)
@@ -209,14 +270,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             _append_summary(result, f"provider configuration check also failed: {exc}")
         else:
             _set_escalation(result, "provider-config-error", str(exc))
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
 
     if after_fingerprint != before_fingerprint:
         if result.escalation_reason == "path-scope-exceeded":
             _append_summary(result, "provider configuration also changed")
         else:
             _set_escalation(result, "provider-configuration-changed", last_summary)
-        return _finish_result(config, run_id, request, result)
+        return _finish_result(config, run_id, request, result, writer, metadata)
 
     if (
         workspace is not None
@@ -230,7 +291,7 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         except (subprocess.CalledProcessError, OSError) as exc:
             _set_escalation(result, "git-commit-failed", _subprocess_summary(exc))
 
-    return _finish_result(config, run_id, request, result)
+    return _finish_result(config, run_id, request, result, writer, metadata)
 
 
 def _prepare_workspace(
@@ -270,7 +331,8 @@ def _run_worker_loop(
     request: TaskRequest,
     config: RouterConfig,
     cwd: Path,
-    run_id: str,
+    record_event: Any,
+    metadata: dict[str, Any],
 ) -> _WorkerLoopResult:
     """Invoke the worker up to ``correction_limit + 1`` times; return outcome."""
     attempts = 0
@@ -280,7 +342,12 @@ def _run_worker_loop(
 
     while attempts <= config.correction_limit:
         attempts += 1
+        record_event("worker-started", attempt=attempts)
+        if metadata["worker_started_at"] is None:
+            metadata["worker_started_at"] = utc_timestamp()
         outcome = _invoke_worker(config, prompt, cwd, request.mode)
+        metadata["worker_finished_at"] = utc_timestamp()
+        record_event("worker-finished", attempt=attempts, status=outcome.status)
         last_summary = outcome.summary
 
         if outcome.status != "ok":
@@ -299,8 +366,10 @@ def _run_worker_loop(
                 escalation_reason=None,
             )
 
+        record_event("tests-started", attempt=attempts)
         tests = _run_all_tests(request.test_commands, cwd, config)
         if any(t["timeout"] for t in tests):
+            record_event("tests-failed", reason="test-timeout")
             return _WorkerLoopResult(
                 attempts=attempts,
                 tests=tests,
@@ -308,6 +377,7 @@ def _run_worker_loop(
                 escalation_reason="test-timeout",
             )
         if any(t.get("error") == "test-launch-failed" for t in tests):
+            record_event("tests-failed", reason="test-launch-failed")
             return _WorkerLoopResult(
                 attempts=attempts,
                 tests=tests,
@@ -315,12 +385,15 @@ def _run_worker_loop(
                 escalation_reason="test-launch-failed",
             )
         if tests and all(t["exit_code"] == 0 for t in tests):
+            record_event("tests-passed")
             return _WorkerLoopResult(
                 attempts=attempts,
                 tests=tests,
                 summary=last_summary,
                 escalation_reason=None,
             )
+
+        record_event("tests-failed", reason="tests-failing")
 
         if attempts > config.correction_limit:
             return _WorkerLoopResult(
@@ -330,6 +403,7 @@ def _run_worker_loop(
                 escalation_reason=None,
             )
 
+        record_event("correction-started", attempt=attempts + 1)
         prompt = _build_correction_prompt(
             request, config, tests, last_summary
         )
@@ -529,38 +603,53 @@ def _append_summary(result: RunResult, detail: str) -> None:
     result.summary = f"{result.summary}; {detail}" if result.summary else detail
 
 
-def _write_records(
-    config: RouterConfig,
-    run_id: str,
-    request: TaskRequest,
-    result: RunResult,
-) -> None:
-    record_dir = config.run_records / run_id
-    record_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write_json(record_dir / "request.json", request.to_dict())
-    _atomic_write_json(record_dir / "result.json", result.to_dict())
-
-
 def _finish_result(
     config: RouterConfig,
     run_id: str,
     request: TaskRequest,
     result: RunResult,
+    writer: EvidenceWriter,
+    metadata: dict[str, Any],
 ) -> RunResult:
+    """Persist the full evidence set, then write the manifest last."""
+    finished_at = utc_timestamp()
+    metadata.update(
+        {
+            "finished_at": finished_at,
+            "duration_ms": _duration_ms(metadata.get("created_at"), finished_at),
+            "attempts": result.attempts,
+            "changed_files": list(result.changed_files),
+            "diff_lines": result.diff_lines,
+            "final_status": result.status,
+            "escalation_reason": result.escalation_reason,
+        }
+    )
+    if result.commit:
+        metadata["worker_commit"] = result.commit
+
     try:
-        _write_records(config, run_id, request, result)
+        if result.status == "escalated":
+            writer.append_event("escalated", reason=result.escalation_reason)
+        elif result.status == "ready-for-review":
+            writer.append_event("ready-for-review")
+        else:
+            writer.append_event(result.status)
+        writer.write_metadata(metadata)
+        writer.write_tests(result.tests)
+        writer.write_result(result.to_dict())
+        writer.finalize_manifest()
     except (OSError, TypeError, ValueError) as exc:
         _set_escalation(result, "evidence-write-failed", str(exc))
     return result
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+def _duration_ms(started_at: str | None, finished_at: str) -> int:
+    """Whole-millisecond distance between two UTC evidence timestamps."""
+    if not started_at:
+        return 0
+    started = parse_utc_timestamp(started_at)
+    finished = parse_utc_timestamp(finished_at)
+    return max(0, int((finished - started).total_seconds() * 1000))
 
 
 def _truncate(text: str, limit: int) -> str:
