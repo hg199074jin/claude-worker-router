@@ -103,6 +103,8 @@ class RunResult:
     branch: str | None = None
     worktree: str | None = None
     commit: str | None = None
+    base_branch: str | None = None
+    base_sha: str | None = None
     changed_files: list[str] = field(default_factory=list)
     diff_lines: int = 0
     tests: list[dict[str, Any]] = field(default_factory=list)
@@ -118,6 +120,8 @@ class RunResult:
             "branch": self.branch,
             "worktree": self.worktree,
             "commit": self.commit,
+            "base_branch": self.base_branch,
+            "base_sha": self.base_sha,
             "changed_files": self.changed_files,
             "diff_lines": self.diff_lines,
             "tests": self.tests,

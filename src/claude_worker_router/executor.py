@@ -207,6 +207,11 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         "fingerprint": before_fingerprint,
     }
 
+    result.base_branch = _detect_branch(request.repository)
+    result.base_sha = _resolve_head(request.repository)
+    metadata["base_branch"] = result.base_branch
+    metadata["base_sha"] = result.base_sha
+
     workspace = _prepare_workspace(request, run_id, result)
 
     # ``_prepare_workspace`` escalates without returning a workspace when the
@@ -713,6 +718,21 @@ def _detect_branch(cwd: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--abbrev-ref", "HEAD"],
+            shell=False,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _resolve_head(cwd: Path) -> str | None:
+    """Best-effort HEAD SHA lookup; ``None`` outside a Git repository."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "HEAD"],
             shell=False,
             check=True,
             text=True,

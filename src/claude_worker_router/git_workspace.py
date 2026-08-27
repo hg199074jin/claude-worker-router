@@ -31,6 +31,8 @@ class GitWorkspace:
     path: Path
     branch: str
     run_id: str
+    base_branch: str
+    base_sha: str
 
     @classmethod
     def create(cls, repository: Path, run_id: str) -> "GitWorkspace":
@@ -38,12 +40,21 @@ class GitWorkspace:
         resolved = _resolve_repo_root(repository)
         _ensure_clean(resolved)
 
+        base_branch = current_branch(resolved)
+        base_sha = current_head(resolved)
         branch = f"codex-worker/{run_id}"
         worktree_root = resolved.parent / ".codex-worktrees" / resolved.name / run_id
 
-        _run_git(resolved, "worktree", "add", "-b", branch, str(worktree_root), "HEAD")
+        _run_git(resolved, "worktree", "add", "-b", branch, str(worktree_root), base_sha)
 
-        return cls(repository=resolved, path=worktree_root, branch=branch, run_id=run_id)
+        return cls(
+            repository=resolved,
+            path=worktree_root,
+            branch=branch,
+            run_id=run_id,
+            base_branch=base_branch,
+            base_sha=base_sha,
+        )
 
     def measure_changes(
         self,
@@ -127,6 +138,18 @@ def _resolve_repo_root(repository: Path) -> Path:
     """Resolve the canonical repository root via ``git rev-parse --show-toplevel``."""
     result = _run_git(Path(repository), "rev-parse", "--show-toplevel")
     return Path(result.stdout.strip()).resolve()
+
+
+def current_head(repository: Path) -> str:
+    """Return the repository's current HEAD commit SHA."""
+    result = _run_git(Path(repository), "rev-parse", "HEAD")
+    return result.stdout.strip()
+
+
+def current_branch(repository: Path) -> str:
+    """Return the repository's current branch name (``HEAD`` when detached)."""
+    result = _run_git(Path(repository), "rev-parse", "--abbrev-ref", "HEAD")
+    return result.stdout.strip() or "HEAD"
 
 
 def _ensure_clean(repository: Path) -> None:

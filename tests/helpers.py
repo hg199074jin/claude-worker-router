@@ -28,6 +28,19 @@ def _git(repository: Path, *args: str) -> None:
     )
 
 
+def git_head(repository: Path) -> str:
+    """Return the current HEAD commit SHA of a repository."""
+
+    result = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        shell=False,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
+
+
 def init_repository(repository: Path) -> Path:
     """Initialize a temporary repository on ``main`` with an ``example.txt`` commit.
 

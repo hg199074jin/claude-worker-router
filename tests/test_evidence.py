@@ -248,10 +248,10 @@ class EvidenceIntegrationTests(unittest.TestCase):
             )
             request = _request_with_repository(repository)
             result = execute_task(request, config)
-        return result, runs_root
+        return result, runs_root, repository
 
     def test_edit_run_produces_complete_evidence_directory(self) -> None:
-        result, runs_root = self._run_edit_fixture(token="top-secret-token")
+        result, runs_root, _repository = self._run_edit_fixture(token="top-secret-token")
         self.assertEqual(result.status, "ready-for-review")
 
         run_dirs = [p for p in runs_root.iterdir() if p.is_dir()]
@@ -327,6 +327,23 @@ class EvidenceIntegrationTests(unittest.TestCase):
         for name, digest in manifest.items():
             actual = hashlib.sha256((run_dir / name).read_bytes()).hexdigest()
             self.assertEqual(digest, actual, name)
+
+    def test_edit_run_records_base_identity_in_result_and_evidence(self) -> None:
+        from tests.helpers import git_head
+
+        result, runs_root, repository = self._run_edit_fixture()
+        pre_head = git_head(repository)
+
+        self.assertEqual(result.status, "ready-for-review")
+        self.assertEqual(result.base_branch, "main")
+        self.assertEqual(result.base_sha, pre_head)
+        self.assertNotEqual(result.commit, pre_head)
+
+        run_dir = next(p for p in runs_root.iterdir() if p.is_dir())
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["base_branch"], "main")
+        self.assertEqual(metadata["base_sha"], pre_head)
+        self.assertEqual(metadata["worker_commit"], result.commit)
 
 
 class _FakeEnv:

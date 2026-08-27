@@ -3,10 +3,37 @@ import unittest
 from pathlib import Path
 
 from claude_worker_router.git_workspace import DirtyCheckoutError, GitWorkspace, ScopeExceededError
-from tests.helpers import init_repository
+from tests.helpers import git_head, init_repository
 
 
 class GitWorkspaceTests(unittest.TestCase):
+    def test_create_records_immutable_base_identity(self):
+        """A fresh worktree pins the exact branch name and HEAD it forked from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = init_repository(Path(tmp) / "repo")
+            pre_head = git_head(repository)
+
+            workspace = GitWorkspace.create(repository, "run-base-001")
+
+            self.assertEqual(workspace.base_branch, "main")
+            self.assertEqual(workspace.base_sha, pre_head)
+
+    def test_base_sha_does_not_change_after_worker_commit(self):
+        """Worker commits land on top of base_sha; the recorded base never moves."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = init_repository(Path(tmp) / "repo")
+            pre_head = git_head(repository)
+            workspace = GitWorkspace.create(repository, "run-base-002")
+
+            (workspace.path / "example.txt").write_text("worker\n", encoding="utf-8")
+            worker_commit = workspace.commit_worker_change("codex-worker: fixture")
+
+            self.assertEqual(workspace.base_sha, pre_head)
+            self.assertNotEqual(worker_commit, pre_head)
+            self.assertEqual(
+                (repository / "example.txt").read_text(encoding="utf-8"), "main\n"
+            )
+
     def test_worker_edit_does_not_change_main_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
             repository = init_repository(Path(tmp) / "repo")
