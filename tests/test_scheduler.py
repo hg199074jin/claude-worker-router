@@ -260,3 +260,59 @@ class ExclusiveSchedulingTests(QueueCliHarness):
         # The two non-exclusive tasks still ran concurrently with each other.
         n1, n2 = (intervals[nid] for nid in normal_ids)
         self.assertTrue(overlaps(n1, n2))
+
+
+class ClaimAbandonmentTests(QueueCliHarness):
+    """Regression: a conflicting mid-priority row must never be stolen."""
+
+    def test_conflicting_middle_row_reaches_terminal_state(self) -> None:
+        text = self.config_path.read_text(encoding="utf-8")
+        self.config_path.write_text(text + "\nmax_concurrency = 2\n", encoding="utf-8")
+        from claude_worker_router.config import load_config
+
+        self._config = load_config(self.config_path)
+
+        specs = [
+            ("A", 9, ("src/core",)),
+            ("B", 5, ("src/core/models",)),  # conflicts with A
+            ("C", 1, ("web",)),
+        ]
+        for tag, prio, scope in specs:
+            payload = _valid_task(
+                repository=str(self.tmp / "same-repo"),
+                task=f"job-{tag}",
+                priority=prio,
+                allowed_paths=scope,
+            )
+            Path(payload["repository"]).mkdir(exist_ok=True)
+            self._submit(payload)
+
+        executed: list[str] = []
+        lock = threading.Lock()
+
+        def fake_execute(request, config, on_child_start=None, run_id=None):
+            with lock:
+                executed.append(request.task)
+            return RunResult(run_id=run_id or "", status="read-only")
+
+        with (
+            patch("claude_worker_router.task_queue.execute_task", fake_execute),
+            patch(
+                "claude_worker_router.task_queue.read_current_fingerprint",
+                side_effect=lambda cfg: "fp-stable",
+            ),
+            patch("claude_worker_router.task_queue.os.getpid", return_value=997),
+        ):
+            code, out, err = self._main(["--config", str(self.config_path), "drain"])
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(executed), ["job-A", "job-B", "job-C"])
+        rows = self._all_rows()
+        self.assertEqual(len(rows), 3)
+        for run_id, row in rows.items():
+            self.assertNotEqual(
+                row["lifecycle"],
+                "running",
+                f"{run_id} abandoned in running state",
+            )
+            self.assertEqual(row["lifecycle"], "ready-for-review")

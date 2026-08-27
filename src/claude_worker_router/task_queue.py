@@ -288,50 +288,38 @@ def _select_batch(
 
 
 def _claim_rows(
-    store: StateStore, rows: list[dict[str, Any]], *, provider_epoch: str | None
+    store: StateStore,
+    rows: list[dict[str, Any]],
+    *,
+    provider_epoch: str | None,
+    runner_pid: int | None,
 ) -> list[dict[str, Any]]:
-    """Atomically flip selected rows to running with the batch epoch."""
-    claimed = []
+    """Flip exactly the SELECTED rows to running via per-row atomic claim.
+
+    ``claim_next`` is deliberately not used here: it always returns the
+    globally highest-priority pending row, so it would steal rows the
+    scheduler skipped (e.g. path-conflicting mid-priority tasks) and leave
+    them stranded in ``running`` with no executor. Each
+    ``claim_specific`` is a single conditional UPDATE -- atomic on its
+    own -- so a row is either won by this batch or left untouched for a
+    later batch or another drainer.
+    """
+    if not rows:
+        return []
+    from .evidence import utc_timestamp as _utc_now
+
+    started_at = _utc_now()  # one stamp per batch for auditability
+    claimed: list[dict[str, Any]] = []
     for row in rows:
-        with_store = store.get(row["run_id"])
-        if with_store and with_store["lifecycle"] == RunLifecycle.PENDING.value:
-            direct = store.claim_next(provider_epoch=provider_epoch)
-            # claim_next may surface a different row than requested if a
-            # concurrent drainer raced; loop-guard below handles reality.
-            if direct and direct["run_id"] != row["run_id"]:
-                continue
-            if direct:
-                claimed.append(direct)
-        if not claimed or claimed[-1]["run_id"] != row["run_id"]:
-            # fall back: the exact-row claim via state UPDATE guard
-            forced = _force_claim(store, row["run_id"], provider_epoch)
-            if forced:
-                claimed.append(forced)
+        won = store.claim_specific(
+            row["run_id"],
+            pid=runner_pid,
+            provider_epoch=provider_epoch,
+            started_at=started_at,
+        )
+        if won is not None:
+            claimed.append(won)
     return claimed
-
-
-def _force_claim(
-    store: StateStore, run_id: str, provider_epoch: str | None
-) -> dict[str, Any] | None:
-    import sqlite3 as _sq
-
-    try:
-        with _sq.connect(str(store.db_path)) as conn:
-            cur = conn.execute(
-                """
-                UPDATE runs SET lifecycle='running',
-                       pid=COALESCE(pid,pid),
-                       started_at=COALESCE(started_at, datetime('now')),
-                       provider_epoch=COALESCE(?,provider_epoch)
-                 WHERE run_id=? AND lifecycle='pending'
-                """,
-                (provider_epoch, run_id),
-            )
-            if cur.rowcount != 1:
-                return None
-        return store.get(run_id)
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def drain(
@@ -422,10 +410,27 @@ def drain(
         if not rows:
             return _finish(0, processed)
 
-        claimed_rows = _claim_rows(store, rows, provider_epoch=provider_epoch)
+        claimed_rows = _claim_rows(
+            store,
+            rows,
+            provider_epoch=provider_epoch,
+            runner_pid=os.getpid(),
+        )
         first_batch = False
+        if not claimed_rows:
+            # Selected rows existed but every claim lost the race (another
+            # drainer or a cancel won them). Re-selecting would spin on the
+            # same losers forever, so stop cleanly instead.
+            print(
+                "dispatch stopped: batch selection made no progress "
+                "(rows claimed by someone else); no pending work for this drainer",
+                file=log,
+            )
+            return _finish(0, processed)
 
+        import traceback as _traceback
         steps: dict[str, dict[str, Any]] = {}
+        thread_errors: dict[str, str] = {}
 
         def _run_one(row: dict[str, Any]) -> None:
             from .state_store import StateTransitionError
@@ -434,7 +439,12 @@ def drain(
                 result = _execute_claim_row(row, config, store)
                 steps[row["run_id"]] = result
             except Exception as exc:  # noqa: BLE001 - isolate worker crash per slot
-                print(f"worker thread error on {row['run_id']}: {exc!r}", file=sys.stderr)
+                # Buffer the diagnostic for the main thread to print, so
+                # threads never touch ``sys.stderr`` directly (StringIO
+                # patches and concurrent writes are both unsafe).
+                thread_errors[row["run_id"]] = "".join(
+                    _traceback.format_exception(type(exc), exc, exc.__traceback__)
+                )[:400]
                 try:
                     store.finish(
                         row["run_id"],
@@ -458,7 +468,25 @@ def drain(
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=config.timeout_seconds + 30)
+            if t.is_alive():
+                # A worker thread wedged: refuse to claim more batches
+                # and surface the result so the outer loop can stop
+                # cleanly rather than spinning forever.
+                thread_errors.setdefault(
+                    "unknown",
+                    f"worker thread did not finish within "
+                    f"{config.timeout_seconds + 30}s",
+                )
+                break
+
+        if thread_errors:
+            for run_id, detail in thread_errors.items():
+                print(
+                    f"worker thread error on {run_id}: {detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         for row in claimed_rows:
             step = steps.get(row["run_id"])

@@ -100,6 +100,16 @@ claude_settings = "{self.settings}"
     def _store(self) -> StateStore:
         return StateStore(self.db_path)
 
+    def _all_rows(self) -> dict[str, dict]:
+        """Snapshot of every state row keyed by run_id (shared harness)."""
+        import sqlite3
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            return {
+                r["run_id"]: dict(r) for r in conn.execute("SELECT * FROM runs")
+            }
+
     def _feed_stdin(self, payload: dict) -> None:
         self.sys_stdin_saved = getattr(self, "sys_stdin_saved", sys.stdin)
         sys.stdin = io.StringIO(json.dumps(payload))

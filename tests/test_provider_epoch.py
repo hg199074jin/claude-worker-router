@@ -150,15 +150,5 @@ class ProviderEpochDrainTests(QueueCliHarness):
         self.assertEqual(untouched["lifecycle"], "pending")
 
 
-def _rows(self):
-    import sqlite3
-
-    with sqlite3.connect(str(self.db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        return {r["run_id"]: dict(r) for r in conn.execute("SELECT * FROM runs")}
-
-
-QueueCliHarness._all_rows = _rows
-
 if __name__ == "__main__":
     unittest.main()

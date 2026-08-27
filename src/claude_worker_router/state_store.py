@@ -316,6 +316,45 @@ class StateStore:
                 "UPDATE runs SET pid = ? WHERE run_id = ?", (int(pid), run_id)
             )
 
+    def claim_specific(
+        self,
+        run_id: str,
+        *,
+        pid: int | None = None,
+        provider_epoch: str | None = None,
+        started_at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically flip ONE pending row to running; ``None`` on any miss.
+
+        The conditional UPDATE is the whole race guard: a row is either
+        still pending (we win it) or it is not (a concurrent drainer or a
+        cancel won first). Unlike :meth:`claim_next`, the caller names the
+        exact run so a scheduler's deliberate skip can never be stolen.
+        """
+        _validate_run_id(run_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE runs
+                   SET lifecycle = ?,
+                       pid = ?,
+                       provider_epoch = ?,
+                       started_at = COALESCE(started_at, ?)
+                 WHERE run_id = ? AND lifecycle = ?
+                """,
+                (
+                    RunLifecycle.RUNNING.value,
+                    pid,
+                    provider_epoch,
+                    started_at or utc_timestamp(),
+                    run_id,
+                    RunLifecycle.PENDING.value,
+                ),
+            )
+            if cur.rowcount != 1:
+                return None
+        return self.get(run_id)
+
     def peek_next_pending(self) -> dict[str, Any] | None:
         """Next pending row WITHOUT claiming it (pure read)."""
         with self._connect() as conn:
