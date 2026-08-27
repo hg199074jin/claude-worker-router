@@ -55,6 +55,7 @@ class FixtureOutcome:
     repository: Path
     invocation_count: int
     captured_argv: tuple[str, ...]
+    config: RouterConfig | None = None
 
 
 def seed_smoke_test(repository: Path) -> Path:
@@ -257,6 +258,7 @@ def run_bounded_fixture(
         repository=repository,
         invocation_count=count,
         captured_argv=captured,
+        config=config,
     )
 
 

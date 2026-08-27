@@ -24,6 +24,7 @@ from .config import RouterConfig, default_config_path, load_config
 from .doctor import DoctorCheck, overall_status, render_json, run_doctor
 from .executor import execute_task
 from .models import TaskRequest
+from .run_store import validate_run_id
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -261,12 +262,33 @@ def _show_command(args: argparse.Namespace, config: RouterConfig) -> int:
     return 0
 
 
+def _integrate_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Run the verified fast-forward integration for one reviewed run."""
+    from .integration import IntegrationError, integrate_run
+
+    try:
+        validate_run_id(args.run_id)
+    except ValueError as exc:
+        print(f"invalid run id: {exc}", file=sys.stderr)
+        return 2
+    try:
+        merged_sha = integrate_run(args.run_id, config)
+    except IntegrationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"integrate failed unexpectedly: {exc}", file=sys.stderr)
+        return 2
+    sys.stdout.write(f"integrated {args.run_id} at {merged_sha}\n")
+    return 0
+
+
 #: Placeholder handlers; each V1.2 task replaces its own entry.
 _COMMAND_HANDLERS: dict[str, object] = {
     "doctor": _doctor_command,
     "list": _list_command,
     "show": _show_command,
-    "integrate": _noop_command,
+    "integrate": _integrate_command,
     "cleanup": _noop_command,
 }
 
