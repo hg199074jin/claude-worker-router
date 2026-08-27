@@ -267,6 +267,24 @@ def execute_task(
         _set_escalation(result, "policy-relaxation-rejected", str(exc))
         return _finish_result(config, run_id, request, result, writer, metadata)
 
+    # Test-profile resolution happens before any preflight that inspects
+    # test binaries; the router owns profile contents so an unknown name is
+    # a structured escalation rather than a CLI crash.
+    if request.test_profile:
+        profile = config.test_profiles.get(request.test_profile)
+        if profile is None:
+            message = f"test profile {request.test_profile!r} is not configured"
+            record_event("test-profile-unknown", detail=message)
+            _set_escalation(result, "test-profile-unknown", message)
+            return _finish_result(config, run_id, request, result, writer, metadata)
+        from dataclasses import replace as _replace
+
+        request = _replace(
+            request,
+            test_commands=tuple(profile.commands),
+            exclusive_tests=request.exclusive_tests or profile.exclusive,
+        )
+
     effective = resolved.effective
     config = replace(
         config,

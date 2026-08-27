@@ -164,6 +164,8 @@ def run_bounded_fixture(
     command_override: str | None = None,
     global_policy_body: str | None = None,
     project_policy_body: str | None = None,
+    test_profiles_config: dict | None = None,
+    test_profile_name: str | None = None,
 ) -> FixtureOutcome:
     """Drive ``execute_task`` end-to-end with the deterministic fake Claude.
 
@@ -209,6 +211,28 @@ def run_bounded_fixture(
             project_policy_body, encoding="utf-8"
         )
 
+    from claude_worker_router.models import TestProfile
+
+    def _to_profile(pname: str, pval):
+        if (
+            isinstance(pval, tuple)
+            and len(pval) == 2
+            and isinstance(pval[1], bool)
+            and isinstance(pval[0], tuple)
+        ):
+            argvs, excl = pval[0], pval[1]
+        else:
+            argvs, excl = pval, False
+        if argvs and isinstance(argvs[0], str):
+            argvs = (argvs,)
+        commands = tuple(TestCommand(argv=list(cmd)) for cmd in argvs)
+        return TestProfile(name=pname, commands=commands, exclusive=excl)
+
+    test_profiles_config = {
+        pname: _to_profile(pname, pval)
+        for pname, pval in (test_profiles_config or {}).items()
+    }
+
     overrides = {
         "FAKE_CLAUDE_BEHAVIOR": behavior,
         "FAKE_CLAUDE_SETTINGS_PATH": str(settings_path),
@@ -235,6 +259,12 @@ def run_bounded_fixture(
             test_output_limit_bytes=65536,
             claude_settings=settings_path,
             global_policy_path=global_policy_path,
+            test_profiles=dict(test_profiles_config),
+        )
+        raw_test_commands = (
+            (("uv", "run", "python", "-m", "unittest"),)
+            if mode == "edit"
+            else ()
         )
         request = TaskRequest(
             repository=repository,
@@ -242,11 +272,12 @@ def run_bounded_fixture(
             acceptance_criteria=("example.txt should contain 'worker'",),
             mode=RunMode(mode),
             test_commands=(
-                (TestCommand(argv=("uv", "run", "python", "-m", "unittest")),)
-                if mode == "edit"
-                else ()
+                ()
+                if test_profile_name
+                else tuple(TestCommand(argv=cmd) for cmd in raw_test_commands)
             ),
             allowed_paths=allowed_paths,
+            test_profile=test_profile_name,
         )
         result = execute_task(request, config)
     finally:

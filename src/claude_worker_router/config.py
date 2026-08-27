@@ -1,7 +1,7 @@
 import tomllib
 from pathlib import Path
 
-from .models import RouterConfig
+from .models import RouterConfig, TestProfile
 
 
 _PROVIDER_MODES = {"cc-switch-current"}
@@ -106,6 +106,32 @@ def load_config(path: Path) -> RouterConfig:
             f"max_concurrency must be 1 or 2 (got {raw_concurrency!r})"
         )
 
+    raw_profiles = data.get("test_profiles", {})
+    if not isinstance(raw_profiles, dict):
+        raise ValueError("test_profiles must be a table of tables")
+    test_profiles: dict[str, TestProfile] = {}
+    for name, entry in raw_profiles.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"test_profiles.{name} must be a table")
+        unknown = set(entry) - {"commands", "exclusive"}
+        if unknown:
+            raise ValueError(
+                f"unknown key(s) in test_profiles.{name}: {sorted(unknown)}"
+            )
+        commands_raw = entry.get("commands", [])
+        if not isinstance(commands_raw, list):
+            raise ValueError(f"test_profiles.{name}.commands must be arrays")
+        from .models import TestCommand
+
+        try:
+            commands = tuple(TestCommand.from_value(item) for item in commands_raw)
+        except ValueError as exc:
+            raise ValueError(f"test_profiles.{name}: {exc}") from exc
+        exclusive = bool(entry.get("exclusive", False))
+        test_profiles[str(name)] = TestProfile(
+            name=str(name), commands=commands, exclusive=exclusive
+        )
+
     raw_global_policy = _optional("global_policy")
     if raw_global_policy is None:
         global_policy_path = None
@@ -137,6 +163,7 @@ def load_config(path: Path) -> RouterConfig:
         binary_edit_policy=binary_edit_policy,
         max_concurrency=max_concurrency,
         global_policy_path=global_policy_path,
+        test_profiles=test_profiles,
     )
 
 

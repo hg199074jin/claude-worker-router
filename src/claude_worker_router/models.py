@@ -96,6 +96,15 @@ class TestCommand:
 
 
 @dataclass(frozen=True)
+class TestProfile:
+    """A named, router-owned test command set (V1.3)."""
+
+    name: str
+    commands: tuple[TestCommand, ...]
+    exclusive: bool = False
+
+
+@dataclass(frozen=True)
 class TaskRequest:
     repository: Path
     task: str
@@ -103,10 +112,9 @@ class TaskRequest:
     mode: RunMode
     test_commands: tuple[TestCommand, ...]
     allowed_paths: tuple[str, ...] = ()
-    # V1.5 adaptation (pending V1.3 test profiles): request-level marker
-    # meaning "these tests require the whole machine" — the scheduler must
-    # give such a run a batch of its own.
     exclusive_tests: bool = False
+    # V1.3: name of a configured profile replacing inline test_commands.
+    test_profile: str | None = None
 
     def __post_init__(self) -> None:
         normalized_paths = tuple(
@@ -115,7 +123,11 @@ class TaskRequest:
         object.__setattr__(self, "allowed_paths", normalized_paths)
         if self.mode == RunMode.EDIT and not normalized_paths:
             raise ValueError("edit mode requires allowed_paths")
-        if self.mode == RunMode.EDIT and not self.test_commands:
+        if (
+            self.mode == RunMode.EDIT
+            and not self.test_commands
+            and not self.test_profile
+        ):
             raise ValueError("edit mode requires test_commands")
         if self.mode == RunMode.READ_ONLY and self.test_commands:
             raise ValueError("read-only mode does not accept test_commands")
@@ -135,7 +147,20 @@ class TaskRequest:
         if not isinstance(criteria, list) or not all(isinstance(item, str) and item for item in criteria):
             raise ValueError("acceptance_criteria must be strings")
         mode = RunMode(data.get("mode", "edit"))
-        commands = tuple(TestCommand.from_value(item) for item in data.get("test_commands", []))
+        raw_commands = data.get("test_commands", [])
+        test_profile = data.get("test_profile")
+        if test_profile is not None:
+            if not isinstance(test_profile, str) or not test_profile:
+                raise ValueError("test_profile must be a non-empty string")
+            if raw_commands:
+                raise ValueError(
+                    "test_commands and test_profile are mutually exclusive"
+                )
+        if not isinstance(raw_commands, list) or not all(
+            isinstance(item, list) for item in raw_commands
+        ) and raw_commands:
+            raise ValueError("test_commands must be argv arrays")
+        commands = tuple(TestCommand.from_value(item) for item in raw_commands)
         raw_allowed_paths = data.get("allowed_paths", [])
         if not isinstance(raw_allowed_paths, list) or not all(isinstance(item, str) and item for item in raw_allowed_paths):
             raise ValueError("allowed_paths must be strings")
@@ -151,6 +176,7 @@ class TaskRequest:
             commands,
             allowed_paths,
             exclusive_tests,
+            test_profile,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +189,7 @@ class TaskRequest:
             "test_commands": [list(cmd.argv) for cmd in self.test_commands],
             "allowed_paths": list(self.allowed_paths),
             "exclusive_tests": self.exclusive_tests,
+            "test_profile": self.test_profile,
         }
 
 
@@ -183,6 +210,8 @@ class RouterConfig:
     max_concurrency: int = 1
     # Explicit override for tests; ``None`` means ~/.codex/model-router/policy.toml
     global_policy_path: Path | None = None
+    # Named test profiles (V1.3); empty until config declares any.
+    test_profiles: dict = field(default_factory=dict)
 
 
 @dataclass

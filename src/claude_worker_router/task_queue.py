@@ -209,13 +209,20 @@ PROVIDER_STOP_EXIT_CODE = 5
 import threading
 
 
-def _request_scope(evidence_path: str) -> tuple[tuple[str, ...], bool]:
+def _request_scope(
+    evidence_path: str, config: RouterConfig | None = None
+) -> tuple[tuple[str, ...], bool]:
     """Read (allowed_paths-scope, exclusive) straight from stored evidence."""
     try:
         raw = (Path(evidence_path) / "request.json").read_text(encoding="utf-8")
         data = json.loads(raw)
         paths = tuple(data.get("allowed_paths") or ())
         exclusive = bool(data.get("exclusive_tests", False))
+        profile_name = data.get("test_profile")
+        if not exclusive and profile_name and config is not None:
+            profile = config.test_profiles.get(str(profile_name))
+            if profile is not None and profile.exclusive:
+                exclusive = True
         return paths, exclusive
     except (OSError, ValueError, TypeError):
         # Unreadable scope fails closed: treat as maximally conflicting,
@@ -255,7 +262,9 @@ def _select_batch(
         except OSError:
             repo_key = raw_repo
 
-        scope, exclusive = _request_scope(str(row["evidence_path"]))
+        scope, exclusive = _request_scope(
+            str(row["evidence_path"]), config
+        )
         # Compose repository+path into ONE synthetic POSIX path so the
         # pure prefix engine sees cross-repo scopes as disjoint trees.
         import hashlib as _hl
