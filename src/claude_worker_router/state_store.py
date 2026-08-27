@@ -18,7 +18,7 @@ from typing import Any, Callable
 from .evidence import utc_timestamp
 from .models import RunLifecycle, assert_lifecycle_transition
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -80,7 +80,14 @@ class StateStore:
                 )
             if version < _SCHEMA_VERSION:
                 conn.executescript(_SCHEMA)
-                conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            # v1 → v2: additive provider_epoch column for batch scheduling.
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+            }
+            if "provider_epoch" not in columns and version < 2:
+                conn.execute("ALTER TABLE runs ADD COLUMN provider_epoch TEXT")
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
     def schema_version(db_path: Path) -> int:
@@ -256,7 +263,9 @@ class StateStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def claim_next(self, *, pid: int | None = None) -> dict[str, Any] | None:
+    def claim_next(
+        self, *, pid: int | None = None, provider_epoch: str | None = None
+    ) -> dict[str, Any] | None:
         """Atomically hand out the next pending task as ``running``.
 
         Claiming IS the pending→running transition: priority desc, then
@@ -283,12 +292,14 @@ class StateStore:
                 UPDATE runs
                    SET lifecycle = ?,
                        pid = COALESCE(?, pid),
+                       provider_epoch = COALESCE(?, provider_epoch),
                        started_at = COALESCE(started_at, ?)
                  WHERE run_id = ?
                 """,
                 (
                     RunLifecycle.RUNNING.value,
                     pid,
+                    provider_epoch,
                     now,
                     row["run_id"],
                 ),

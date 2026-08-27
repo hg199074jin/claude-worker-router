@@ -31,6 +31,25 @@ def open_store(config: RouterConfig) -> StateStore:
     return StateStore(default_state_db_path(config))
 
 
+def read_current_fingerprint(config: RouterConfig) -> str | None:
+    """Non-secret provider routing fingerprint, or ``None`` if unavailable.
+
+    Tests patch this symbol to script epoch sequences deterministically.
+    """
+    from .provider import (
+        ProviderConfigError,
+        fingerprint_provider,
+        read_provider_snapshot,
+    )
+
+    try:
+        snapshot = read_provider_snapshot(config.claude_settings)
+        return fingerprint_provider(snapshot)
+    except ProviderConfigError:
+        return None
+
+
+
 _QUEUE_METADATA_KEYS = ("priority", "parent_run_id")
 
 
@@ -128,12 +147,20 @@ def _execute_claimed(
     )
 
 
-def drain_once(config: RouterConfig, *, runner_pid: int | None = None) -> dict[str, Any]:
+def drain_once(
+    config: RouterConfig,
+    *,
+    runner_pid: int | None = None,
+    provider_epoch: str | None = None,
+) -> dict[str, Any]:
     """Claim one task (or none), execute it synchronously, record outcome."""
     from .state_store import StateTransitionError
 
     store = open_store(config)
-    claimed = store.claim_next(pid=os.getpid() if runner_pid is None else runner_pid)
+    claimed = store.claim_next(
+        pid=os.getpid() if runner_pid is None else runner_pid,
+        provider_epoch=provider_epoch,
+    )
     if claimed is None:
         return {"claimed": False}
 
@@ -177,21 +204,44 @@ def drain_once(config: RouterConfig, *, runner_pid: int | None = None) -> dict[s
     }
 
 
+PROVIDER_STOP_EXIT_CODE = 5
+
+
 def drain(
     config: RouterConfig,
     *,
     once: bool = False,
     log=None,
 ) -> tuple[int, list[dict[str, Any]]]:
-    """Sequential single-worker drain. Exit code 3 signals blocked results."""
+    """Single-worker sequential drain guarded by a provider epoch.
+
+    Exit codes: 0 clean completion, 3 one-or-more blocked outcomes,
+    5 dispatch stopped because the provider fingerprint changed.
+    """
     log = log or sys.stdout
     reconcile_before_drain(config, out=log)
 
+    # The epoch is captured once at batch start; the very first task runs
+    # under it without a redundant re-check. Every FURTHER dispatch must
+    # survive a fresh fingerprint comparison or dispatch stops.
+    provider_epoch = read_current_fingerprint(config)
+
+    def _stop(exit_code: int) -> tuple[int, list[dict[str, Any]]]:
+        blocked = sum(
+            1
+            for step in processed
+            if step.get("lifecycle") == RunLifecycle.BLOCKED.value
+        )
+        print(f"summary: completed {len(processed)} run(s)", file=log)
+        if exit_code == 0 and blocked:
+            exit_code = 3
+        return exit_code, processed
+
     processed: list[dict[str, Any]] = []
+    step = drain_once(config, provider_epoch=provider_epoch)
+    if not step.get("claimed"):
+        return _stop(0)
     while True:
-        step = drain_once(config)
-        if not step.get("claimed"):
-            break
         processed.append(step)
         print(
             f"completed {step['run_id']} -> {step['lifecycle']}"
@@ -199,13 +249,23 @@ def drain(
             file=log,
         )
         if once:
-            break
+            return _stop(0)
 
-    blocked = sum(
-        1 for step in processed if step["lifecycle"] == RunLifecycle.BLOCKED.value
-    )
-    print(f"summary: completed {len(processed)} run(s)", file=log)
-    return (3 if blocked else 0), processed
+        current = read_current_fingerprint(config)
+        if current != provider_epoch:
+            remaining = len(list_backlog(config, state="pending"))
+            print(
+                f"dispatch stopped: provider changed since batch start "
+                f"(epoch {'set' if provider_epoch else 'none'} -> "
+                f"{'set' if current else 'none'}); "
+                f"{remaining} pending task(s) untouched; no automatic switch",
+                file=log,
+            )
+            return PROVIDER_STOP_EXIT_CODE, processed
+
+        step = drain_once(config, provider_epoch=provider_epoch)
+        if not step.get("claimed"):
+            return _stop(0)
 
 
 def mark_integrated_sync(

@@ -58,7 +58,7 @@ class StateStoreTests(unittest.TestCase):
 
     def test_schema_version_is_recorded(self) -> None:
         self._store()
-        self.assertEqual(StateStore.schema_version(self.db_path), 1)
+        self.assertEqual(StateStore.schema_version(self.db_path), 2)
 
     def test_insert_defaults_lifecycle_outcome_and_timestamps(self) -> None:
         row = {
