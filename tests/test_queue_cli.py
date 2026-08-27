@@ -441,3 +441,15 @@ class MarkIntegratedSyncTests(QueueCliHarness):
         self.assertEqual(
             self._store().get(run_id)["lifecycle"], "integrated"
         )
+
+
+class QueueStateValidationTests(QueueCliHarness):
+    """Regression (review C5): bogus --state exits 2, not a traceback."""
+
+    def test_bogus_state_returns_two_with_message(self) -> None:
+        code, out, err = self._main(
+            ["--config", str(self.config_path), "queue", "--state", "bogus"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("--state", err)
+        self.assertNotIn("Traceback", err)

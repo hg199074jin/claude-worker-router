@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -171,8 +172,10 @@ def _check_queue_health(config: RouterConfig) -> DoctorCheck:
         pending = store.list_lifecycle(RunLifecycle.PENDING)
         blocked = store.list_lifecycle(RunLifecycle.BLOCKED)
         interrupted = store.find_interrupted(_pid_alive)
-    except (OSError, RuntimeError) as exc:
-        return DoctorCheck("queue-health", "error", f"state db unreadable: {exc}")
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        return DoctorCheck(
+            "queue-health", "error", f"state db unreadable: {type(exc).__name__}: {exc}"
+        )
 
     if interrupted:
         ids = ", ".join(row["run_id"][:12] for row in interrupted)

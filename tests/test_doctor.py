@@ -353,3 +353,43 @@ class QueueHealthTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueueHealthRobustnessTests(unittest.TestCase):
+    """Regression (review C4): corrupt/locked state.db must not crash doctor."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="doctor-sqlite-"))
+        self.addCleanup(_cleanup_tree, self.tmp)
+        self.settings = self.tmp / "settings.json"
+        self.settings.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://api.example.test/anthropic",
+                        "ANTHROPIC_MODEL": "Test-Model",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        fake = self.tmp / "fake-claude.py"
+        fake.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.config = load_config(
+            _write_config(
+                self.tmp,
+                command=str(fake),
+                claude_settings=str(self.settings),
+                run_records=str(self.tmp / "runs"),
+            )
+        )
+
+    def test_corrupt_state_db_yields_error_check_not_traceback(self) -> None:
+        # Where resolve_effective_policy's state db would live: next to runs.
+        db = self.tmp / "state.db"
+        db.write_bytes(b"this is definitely not a sqlite database")
+        checks = run_doctor(self.config)
+        queue_check = next(c for c in checks if c.name == "queue-health")
+        self.assertEqual(queue_check.status, "error")
+        self.assertIn("state db", queue_check.detail.lower())

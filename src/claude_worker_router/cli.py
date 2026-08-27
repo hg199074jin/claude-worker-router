@@ -313,8 +313,9 @@ def _cleanup_command(args: argparse.Namespace, config: RouterConfig) -> int:
                 + "\n"
             )
             return 0
-        sys.stdout.write("\n".join(lines) + ("\n" if lines else "") or "(no stale runs)\n")
-        if not lines:
+        if lines:
+            sys.stdout.write("\n".join(lines) + "\n")
+        else:
             sys.stdout.write("(no stale runs)\n")
         sys.stdout.write(
             f"summary: {len(report.auto_candidates)} auto-cleanable, "
@@ -405,6 +406,18 @@ def _queue_command(args: argparse.Namespace, config: RouterConfig) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if args.state != "all":
+        from .models import RunLifecycle
+
+        valid_states = {item.value for item in RunLifecycle}
+        if args.state not in valid_states:
+            print(
+                f"invalid --state {args.state!r}; expected one of "
+                f"{', '.join(sorted(valid_states))} or 'all'",
+                file=sys.stderr,
+            )
+            return 2
 
     rows = list_backlog(config, state=args.state, limit=limit)
     if args.json:

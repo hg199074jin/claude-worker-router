@@ -157,8 +157,11 @@ def cleanup_run(
 
     branch = metadata.get("worker_branch")
     if isinstance(branch, str) and _branch_exists(repository_root, {"worker_branch": branch}):
+        # ``-d`` refuses unmerged branches; only an explicit --discard may
+        # force-delete history that was never integrated.
+        delete_flag = "-D" if discard else "-d"
         proc = subprocess.run(
-            ["git", "-C", str(repository_root), "branch", "-D", branch],
+            ["git", "-C", str(repository_root), "branch", delete_flag, branch],
             shell=False,
             capture_output=True,
             text=True,
@@ -235,7 +238,7 @@ def find_stale_runs(config: RouterConfig, *, cutoff) -> StaleReport:
             )
             continue
 
-        detail = f"finished_at={(row.get('created_at') or '?')}"
+        detail = f"finished_at={(row.get('finished_at') or row.get('created_at') or '?')}"
         if verdict == "auto":
             auto.append(StaleEntry(run_id, detail))
         else:
