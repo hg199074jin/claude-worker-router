@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -129,11 +130,142 @@ def _noop_command(args: argparse.Namespace, config: RouterConfig) -> int:
     return 2
 
 
+def _list_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """List recorded runs, newest first."""
+    from .run_store import RunStore
+
+    try:
+        limit = int(args.limit) if args.limit is not None else None
+        if limit is not None and limit < 0:
+            raise ValueError("--limit must be non-negative")
+    except ValueError as exc:
+        print(f"invalid --limit: {exc}", file=sys.stderr)
+        return 2
+
+    listing = RunStore(config.run_records).list_runs(
+        repository=os.path.realpath(os.path.expanduser(args.repo)) if args.repo else None,
+        status=args.status,
+        limit=limit,
+    )
+    for warning in listing.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    if args.json:
+        sys.stdout.write(
+            json.dumps(
+                {"runs": listing.rows, "warnings": listing.warnings},
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        return 0
+
+    header = f"{'RUN ID':<36} {'TIME':<24} {'STATUS':<18} {'MODE':<10} {'FILES':>5} {'DIFF':>6} REPOSITORY"
+    sys.stdout.write(header + "\n")
+    for row in listing.rows:
+        created = (row.get("created_at") or "-")[:19].replace("T", " ")
+        status = str(row.get("status") or "-")
+        if row.get("escalation_reason"):
+            status = f"{status}:{row['escalation_reason']}"
+        repository = str(row.get("repository") or "-")
+        sys.stdout.write(
+            f"{str(row['run_id']):<36} {created:<24} {status:<18} "
+            f"{str(row.get('mode') or '-'):<10} {row.get('changed_files', 0):>5} "
+            f"{row.get('diff_lines', 0):>6} {repository}\n"
+        )
+    return 0
+
+
+def _show_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    """Show one recorded run; validation errors and misses exit 2."""
+    from .run_store import RunNotFoundError, RunStore, validate_run_id
+
+    store = RunStore(config.run_records)
+    try:
+        validate_run_id(args.run_id)
+    except ValueError as exc:
+        print(f"invalid run id: {exc}", file=sys.stderr)
+        return 2
+    try:
+        record = store.load_run(args.run_id)
+    except RunNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"cannot load run {args.run_id}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        payload = {
+            "metadata": record["metadata"],
+            "request": record["request"],
+            "result": record["result"],
+        }
+        sys.stdout.write(
+            json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
+        return 0
+
+    metadata = record["metadata"]
+    request = record["request"]
+    result = record["result"]
+
+    def emit(label: str, value: object) -> None:
+        sys.stdout.write(f"{label:<20} {value}\n")
+
+    run_dir = record.get("run_dir", "-")
+    emit("Run", Path(run_dir).name)
+    emit("Task", request.get("task") or "-")
+    for index, criterion in enumerate(request.get("acceptance_criteria") or [], 1):
+        emit(f"Criterion {index}", criterion)
+    emit("Repository", metadata.get("repository") or request.get("repository") or "-")
+    emit("Base SHA", metadata.get("base_sha") or "-")
+    provider = metadata.get("provider") or {}
+    if isinstance(provider, dict):
+        emit(
+            "Provider",
+            f"{provider.get('endpoint_host', '-')}/{provider.get('model', '-')}",
+        )
+    else:
+        emit("Provider", "-")
+    emit("Attempts", metadata.get("attempts", result.get("attempts", "-")))
+    changed = metadata.get("changed_files") or result.get("changed_files") or []
+    emit("Changed Files", ", ".join(changed) if changed else "(none)")
+    tests = record["result"].get("tests") or []
+    for index, test in enumerate(tests, 1):
+        argv = test.get("argv") or []
+        emit(
+            f"Test {index}",
+            f"exit={test.get('exit_code')} argv={' '.join(argv)}",
+        )
+    diff_lines = metadata.get("diff_lines", result.get("diff_lines", "-"))
+    emit("Diff Lines", diff_lines)
+    outcome = metadata.get("final_status") or result.get("status") or "-"
+    emit("Outcome", outcome)
+    escalation = (
+        metadata.get("escalation_reason")
+        if metadata.get("escalation_reason") is not None
+        else result.get("escalation_reason")
+    )
+    emit("Escalation", escalation or "(none)")
+    integration_bits = [
+        str(bit)
+        for bit in (metadata.get("integrated_at"), metadata.get("integrated_sha"))
+        if bit
+    ]
+    emit("Integration", " ".join(integration_bits) if integration_bits else "(not integrated)")
+    worktree = metadata.get("worktree") or "-"
+    emit("Worktree", worktree)
+    return 0
+
+
 #: Placeholder handlers; each V1.2 task replaces its own entry.
 _COMMAND_HANDLERS: dict[str, object] = {
     "doctor": _doctor_command,
-    "list": _noop_command,
-    "show": _noop_command,
+    "list": _list_command,
+    "show": _show_command,
     "integrate": _noop_command,
     "cleanup": _noop_command,
 }
@@ -163,9 +295,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="emit machine-readable JSON instead of text",
     )
-    subparsers.add_parser("list", help="list recorded worker runs")
+    list_parser = subparsers.add_parser("list", help="list recorded worker runs")
+    list_parser.add_argument("--repo", help="only runs for this repository path")
+    list_parser.add_argument("--status", help="only runs with this final status")
+    list_parser.add_argument("--limit", type=int, help="show at most N runs")
+    list_parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     show = subparsers.add_parser("show", help="show one recorded run")
     show.add_argument("run_id")
+    show.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     integrate = subparsers.add_parser("integrate", help="integrate a reviewed run")
     integrate.add_argument("run_id")
     cleanup = subparsers.add_parser("cleanup", help="remove a finished run's worktree")
