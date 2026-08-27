@@ -40,6 +40,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_queue ON runs(lifecycle, priority DESC, crea
 """
 
 
+def default_state_db_path(config: Any) -> Path:
+    """The lifecycle database lives next to the configured run records."""
+    return Path(config.run_records).parent / "state.db"
+
+
 class StateTransitionError(RuntimeError):
     """Raised when a lifecycle update violates the state machine."""
 

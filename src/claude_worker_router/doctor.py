@@ -53,6 +53,7 @@ def run_doctor(
         *_check_provider_settings(config),
         _check_run_records_storage(config),
         *_check_test_binaries(config),
+        _check_queue_health(config),
     ]
     if repository is not None:
         checks.extend(_check_repository(Path(repository)))
@@ -152,6 +153,42 @@ def _check_test_binaries(config: RouterConfig) -> list[DoctorCheck]:
         else:
             checks.append(DoctorCheck(f"test-binary:{binary}", "ok", found))
     return checks
+
+
+def _check_queue_health(config: RouterConfig) -> DoctorCheck:
+    """Surface interrupted runners; recovery is explicit, never automatic."""
+    from .state_store import _pid_alive, StateStore, default_state_db_path  # noqa: F401
+
+    db_path = default_state_db_path(config)
+    if not db_path.exists():
+        return DoctorCheck("queue-health", "ok", "no state database yet")
+
+    try:
+        store = StateStore(db_path)
+        from .models import RunLifecycle
+
+        running = store.list_lifecycle(RunLifecycle.RUNNING)
+        pending = store.list_lifecycle(RunLifecycle.PENDING)
+        blocked = store.list_lifecycle(RunLifecycle.BLOCKED)
+        interrupted = store.find_interrupted(_pid_alive)
+    except (OSError, RuntimeError) as exc:
+        return DoctorCheck("queue-health", "error", f"state db unreadable: {exc}")
+
+    if interrupted:
+        ids = ", ".join(row["run_id"][:12] for row in interrupted)
+        return DoctorCheck(
+            "queue-health",
+            "warning",
+            f"{len(interrupted)} crashed runner(s) ({ids}); outcome was set to "
+            "runner-interrupted and re-execution must be an explicit new run "
+            "-- never silent",
+        )
+
+    detail = (
+        f"pending={len(pending)} running={len(running)} "
+        f"blocked(terminal)={len(blocked)}"
+    )
+    return DoctorCheck("queue-health", "ok", detail)
 
 
 def _check_repository(repository: Path) -> list[DoctorCheck]:

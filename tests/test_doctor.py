@@ -296,5 +296,60 @@ def _cleanup_tree(path: Path) -> None:
     shutil.rmtree(path, True)
 
 
+class QueueHealthTests(unittest.TestCase):
+    """Crashed runners surface in doctor as actionable warnings (V1.4 T20)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="doctor-queue-"))
+        self.addCleanup(_cleanup_tree, self.tmp)
+        settings = self.tmp / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://api.example.test/anthropic",
+                        "ANTHROPIC_MODEL": "Test-Model",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        fake_claude = self.tmp / "fake-claude.py"
+        fake_claude.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        fake_claude.chmod(0o755)
+        self.config = load_config(
+            _write_config(
+                self.tmp,
+                command=str(fake_claude),
+                claude_settings=str(settings),
+                run_records=str(self.tmp / "runs"),
+            )
+        )
+
+    def test_missing_state_database_is_ok_not_an_error(self) -> None:
+        checks = run_doctor(self.config)
+        queue_check = next(c for c in checks if c.name == "queue-health")
+        self.assertEqual(queue_check.status, "ok")
+
+    def test_interrupted_running_row_is_reported_for_explicit_recovery(self) -> None:
+        from claude_worker_router.state_store import StateStore
+
+        store = StateStore(self.tmp / "state.db")
+        store.insert_pending(
+            run_id="a" * 32,
+            repository="/repo/q",
+            evidence_path="/records/" + "a" * 32,
+        )
+        store.claim_next(pid=2_000_000_000)
+
+        checks = run_doctor(self.config)
+        queue_check = next(c for c in checks if c.name == "queue-health")
+
+        # PID 2000000000 is astronomically unlikely to exist in tests.
+        self.assertEqual(queue_check.status, "warning")
+        self.assertIn("runner-interrupted", queue_check.detail)
+        self.assertIn("never", queue_check.detail.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

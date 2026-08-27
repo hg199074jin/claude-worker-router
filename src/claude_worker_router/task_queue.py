@@ -23,12 +23,7 @@ from .config import RouterConfig
 from .evidence import EvidenceWriter
 from .executor import execute_task
 from .models import RunLifecycle, RunResult, TaskRequest
-from .state_store import StateStore
-
-
-def default_state_db_path(config: RouterConfig) -> Path:
-    """The state db lives next to the configured run records root."""
-    return Path(config.run_records).parent / "state.db"
+from .state_store import StateStore, default_state_db_path
 
 
 def open_store(config: RouterConfig) -> StateStore:
