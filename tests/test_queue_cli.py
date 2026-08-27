@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 from claude_worker_router import cli
 from claude_worker_router.config import load_config
-from claude_worker_router.models import RunResult
+from claude_worker_router.models import RunLifecycle, RunResult
 from claude_worker_router.state_store import StateStore
 
 
@@ -407,3 +407,37 @@ if __name__ == "__main__":
 
 def submitted_row_evidence(testcase, run_id: str) -> str:
     return testcase._store().get(run_id)["evidence_path"]
+
+
+class MarkIntegratedSyncTests(QueueCliHarness):
+    """Regression (review C2): the integrate CLI's state-sync hook exists."""
+
+    def test_mark_integrated_sync_is_importable_and_idempotent(self) -> None:
+        from claude_worker_router.task_queue import mark_integrated_sync
+
+        payload = _valid_task(repository=str(self.tmp / "sync-target"))
+        Path(payload["repository"]).mkdir(exist_ok=True)
+        _, submitted = self._submit(payload)
+        run_id = submitted["run_id"]
+
+        # Simulate the completed run reaching ready-for-review.
+        self._store().update_lifecycle(run_id, RunLifecycle.RUNNING)
+        self._store().finish(
+            run_id,
+            lifecycle=RunLifecycle.READY_FOR_REVIEW,
+            outcome="read-only",
+        )
+
+        import io
+        from contextlib import redirect_stderr
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            ok_first = mark_integrated_sync(run_id, self._config)
+            ok_again = mark_integrated_sync(run_id, self._config)
+
+        self.assertTrue(ok_first)
+        self.assertTrue(ok_again)  # idempotent on terminal state
+        self.assertEqual(
+            self._store().get(run_id)["lifecycle"], "integrated"
+        )

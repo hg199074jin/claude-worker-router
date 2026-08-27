@@ -649,6 +649,40 @@ def cancel_run(run_id: str, config: RouterConfig, *, log=None) -> dict[str, Any]
     )
 
 
+def mark_integrated_sync(
+    run_id: str, config: RouterConfig, *, log=None
+) -> bool:
+    """Best-effort lifecycle sync after a successful integrate command.
+
+    Runs that never went through ``submit`` (legacy stdin) get tracked
+    lazily here so *integrate 后状态准确* holds across entry points.
+    Failures never undo the integration itself; they surface as stderr
+    notes only.
+    """
+    from .run_store import RunStore
+
+    log = log or sys.stderr
+    try:
+        record = RunStore(config.run_records).load_run(run_id)
+        metadata = record.get("metadata") or {}
+        request = record.get("request") or {}
+        store = open_store(config)
+        row = store.ensure_row(
+            run_id=run_id,
+            repository=str(metadata.get("repository") or "?"),
+            mode=str(request.get("mode") or "edit"),
+            final_status="ready-for-review",
+            evidence_path=str(record.get("run_dir", "")),
+        )
+        if row["lifecycle"] == RunLifecycle.INTEGRATED.value:
+            return True
+        store.update_lifecycle(run_id, RunLifecycle.INTEGRATED)
+        return True
+    except Exception as exc:  # noqa: BLE001 - sync must not break integration UX
+        print(f"warning: state sync skipped: {exc}", file=log)
+        return False
+
+
 def execute_single(config: RouterConfig) -> int:
     """One claimed execution inside an isolated process session.
 
