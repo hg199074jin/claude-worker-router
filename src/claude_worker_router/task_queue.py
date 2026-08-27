@@ -120,7 +120,12 @@ def _execute_claimed(
     evidence_path = Path(row["evidence_path"])
     raw = (evidence_path / "request.json").read_text(encoding="utf-8")
     request = TaskRequest.from_dict(json.loads(raw))
-    return execute_task(request, config, on_child_start=on_child_start)
+    return execute_task(
+        request,
+        config,
+        on_child_start=on_child_start,
+        run_id=str(row["run_id"]),
+    )
 
 
 def drain_once(config: RouterConfig, *, runner_pid: int | None = None) -> dict[str, Any]:

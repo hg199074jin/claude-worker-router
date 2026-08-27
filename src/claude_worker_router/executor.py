@@ -128,9 +128,13 @@ def execute_task(
     config: RouterConfig,
     *,
     on_child_start: Callable[[int], None] | None = None,
+    run_id: str | None = None,
 ) -> RunResult:
-    """Run one bounded worker task and return review evidence without integrating it."""
-    run_id = _new_run_id()
+    """Run one bounded worker task and return review evidence without integrating."""
+    # ``run_id`` lets the queue layer keep ONE identity from submission
+    # through execution; callers without a queue keep the legacy fresh id.
+    reused = bool(run_id)
+    run_id = run_id or _new_run_id()
     result = RunResult(run_id=run_id, status="escalated")
     result.provider = {"endpoint_host": "", "model": ""}
 
@@ -168,7 +172,11 @@ def execute_task(
             pass
 
     try:
-        writer.create_run(request)
+        if reused and (writer.run_dir / "request.json").is_file():
+            # Queue-resumed run: the timeline already exists from submit.
+            writer.append_event("executor-attached", mode=request.mode.value)
+        else:
+            writer.create_run(request)
     except OSError as exc:
         _set_escalation(result, "evidence-write-failed", str(exc))
         return result

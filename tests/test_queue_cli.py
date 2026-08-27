@@ -202,7 +202,7 @@ class DrainTests(QueueCliHarness):
         """Patch task_queue.execute_task with an ordered scripted response."""
         calls: list[str] = []
 
-        def fake_execute(request, config, on_child_start=None):
+        def fake_execute(request, config, on_child_start=None, run_id=None):
             run_marker = request.task
             calls.append(run_marker)
             return script[len(calls) - 1]
@@ -220,7 +220,7 @@ class DrainTests(QueueCliHarness):
 
         calls: list[str] = []
 
-        def fake_execute(request, config, on_child_start=None):
+        def fake_execute(request, config, on_child_start=None, run_id=None):
             calls.append(request.task)
             return RunResult(run_id="x" * 32, status="ready-for-review")
 
@@ -252,7 +252,7 @@ class DrainTests(QueueCliHarness):
             self._main(["--config", str(self.config_path), "submit"])
         self._restore_stdin()
 
-        def fake_execute(request, config, on_child_start=None):
+        def fake_execute(request, config, on_child_start=None, run_id=None):
             return RunResult(run_id="y" * 32, status="ready-for-review")
 
         with (
@@ -278,7 +278,7 @@ class DrainTests(QueueCliHarness):
         self._main(["--config", str(self.config_path), "submit"])
         self._restore_stdin()
 
-        def fake_execute(request, config, on_child_start=None):
+        def fake_execute(request, config, on_child_start=None, run_id=None):
             return RunResult(
                 run_id="z" * 32,
                 status="escalated",
@@ -295,6 +295,59 @@ class DrainTests(QueueCliHarness):
         rows = self._list_rows()
         self.assertEqual(rows[0]["lifecycle"], "blocked")
         self.assertEqual(rows[0]["outcome"], "escalated")
+
+    def test_queued_execution_reuses_submission_identity(self) -> None:
+        """One run id from submit through execution; single evidence dir."""
+        payload = _valid_task(repository=str(self.tmp / "ident"))
+        Path(payload["repository"]).mkdir(exist_ok=True)
+        _, submitted = self._submit(payload)
+        run_id = submitted["run_id"]
+        pre_request = json.loads(
+            (Path(submitted_row_evidence(self, run_id)) / "request.json").read_text()
+        )
+
+        # Real executor path (the harness's inert fake-claude) so we prove
+        # execute_task honors the queue-supplied run id.
+        import sqlite3
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE runs SET mode='read-only' WHERE run_id=?", (run_id,)
+            )
+        ev = Path(self._store().get(run_id)["evidence_path"])
+        req = json.loads((ev / "request.json").read_text())
+        req["mode"] = "read-only"
+        req["test_commands"] = []
+        (ev / "request.json").write_text(json.dumps(req))
+
+        # Real executor path: swap the inert one-line stub for the real
+        # deterministic fake so the worker emits valid result JSON.
+        import shutil as _shutil
+
+        _shutil.copyfile(
+            Path(__file__).resolve().parent / "fake_claude.py", self.fake_claude
+        )
+        self.fake_claude.chmod(0o755)
+        code, out, err = self._main(["--config", str(self.config_path), "drain"])
+
+        self.assertEqual(code, 0, err)
+        names = {x.name for x in ev.iterdir()}
+        self.assertIn("result.json", names)
+        self.assertIn("evidence_manifest.json", names)
+        self.assertEqual(pre_request["task"], payload["task"])
+        # Exactly ONE directory: submission and execution share identity.
+        rows = [d for d in self.runs_root.iterdir() if d.is_dir()]
+        self.assertEqual([d.name for d in rows], [run_id])
+        events = [
+            json.loads(line)["event"]
+            for line in (ev / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertIn("run-created", events)
+        self.assertIn("executor-attached", events)
+        row = self._store().get(run_id)
+        self.assertEqual(row["lifecycle"], "ready-for-review")
+        self.assertEqual(row["outcome"], "read-only")
+        self.assertEqual(row["evidence_path"], str(ev))
 
     def test_drain_starts_with_crash_reconciliation(self) -> None:
         """A stale running row with a dead pid becomes blocked, not rerun."""
@@ -321,7 +374,7 @@ class DrainTests(QueueCliHarness):
 
         executed: list[str] = []
 
-        def fake_execute(request, config, on_child_start=None):
+        def fake_execute(request, config, on_child_start=None, run_id=None):
             executed.append(request.task)
             return RunResult(run_id="w" * 32, status="read-only")
 
@@ -340,3 +393,7 @@ class DrainTests(QueueCliHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def submitted_row_evidence(testcase, run_id: str) -> str:
+    return testcase._store().get(run_id)["evidence_path"]
