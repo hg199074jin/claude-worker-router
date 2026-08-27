@@ -32,6 +32,12 @@ from .provider import (
     fingerprint_provider,
     read_provider_snapshot,
 )
+from .policy import (
+    BUILTIN_DENY_PATHS,
+    PolicyRelaxationRejected,
+    default_global_policy_path,
+    resolve_effective_policy,
+)
 from .safety import (
     ExternalSymlinkError,
     find_binary_changes,
@@ -243,6 +249,51 @@ def execute_task(
             return _finish_result(config, run_id, request, result, writer, metadata)
         record_event("symlink-scan-passed")
 
+    # Policy fold (config floor ← global file ← project file), tightened
+    # budgets replace the run cap, and static deny intersections refuse
+    # the request before anything expensive happens.
+    try:
+        resolved = resolve_effective_policy(
+            _base_policy_from(config),
+            global_path=(
+                config.global_policy_path
+                if config.global_policy_path is not None
+                else default_global_policy_path()
+            ),
+            repository=request.repository,
+        )
+    except PolicyRelaxationRejected as exc:
+        record_event("policy-rejected", detail=str(exc))
+        _set_escalation(result, "policy-relaxation-rejected", str(exc))
+        return _finish_result(config, run_id, request, result, writer, metadata)
+
+    effective = resolved.effective
+    config = replace(
+        config,
+        max_turns=effective.max_turns,
+        timeout_seconds=effective.timeout_seconds,
+        max_changed_files=effective.max_changed_files,
+        max_diff_lines=effective.max_diff_lines,
+    )
+    enforced_denies = tuple(
+        sorted(set(effective.deny_paths) | set(BUILTIN_DENY_PATHS))
+    )
+    overlapping = [
+        scope
+        for scope in request.allowed_paths
+        if _scope_hits_denies(scope, enforced_denies)
+    ]
+    if overlapping:
+        message = (
+            "request allowed_paths intersect policy denials: "
+            + ", ".join(overlapping)
+            + " vs "
+            + ", ".join(enforced_denies)
+        )
+        record_event("policy-path-denied", stage="static", detail=message)
+        _set_escalation(result, "policy-path-denied", message)
+        return _finish_result(config, run_id, request, result, writer, metadata)
+
     workspace = _prepare_workspace(request, run_id, result)
 
     # ``_prepare_workspace`` escalates without returning a workspace when the
@@ -296,8 +347,22 @@ def execute_task(
                     config.max_diff_lines,
                     request.allowed_paths,
                 )
+                denied_files = [
+                    changed
+                    for changed in measure.files
+                    if _file_under_any(changed, enforced_denies)
+                ]
+                if denied_files:
+                    raise _PolicyPathDenied(denied_files)
                 result.changed_files = list(measure.files)
                 result.diff_lines = measure.diff_lines
+            except _PolicyPathDenied as exc:
+                message = (
+                    "changed files hit policy denials: "
+                    + ", ".join(exc.paths)
+                )
+                record_event("policy-path-denied", stage="dynamic", detail=message)
+                _set_escalation(result, "policy-path-denied", message)
             except PathScopeExceededError as exc:
                 _set_escalation(result, "path-scope-exceeded", str(exc))
             except ScopeExceededError as exc:
@@ -792,6 +857,50 @@ def _subprocess_summary(exc: subprocess.CalledProcessError | OSError) -> str:
         stderr = _timeout_text(exc.stderr).strip()
         return stderr or f"command failed with exit code {exc.returncode}"
     return str(exc)
+
+
+class _PolicyPathDenied(Exception):
+    def __init__(self, paths: tuple[str, ...]) -> None:
+        super().__init__(", ".join(paths))
+        self.paths = paths
+
+
+def _base_policy_from(config: RouterConfig):
+    from .policy import RouterPolicy
+
+    return RouterPolicy(
+        max_turns=config.max_turns,
+        timeout_seconds=config.timeout_seconds,
+        max_changed_files=config.max_changed_files,
+        max_diff_lines=config.max_diff_lines,
+    )
+
+
+def _file_under_any(changed: str, denies: tuple[str, ...]) -> bool:
+    from pathlib import PurePosixPath
+
+    changed_parts = PurePosixPath(changed).parts
+    for deny in denies:
+        dparts = PurePosixPath(deny).parts
+        if changed_parts[: len(dparts)] == dparts:
+            return True
+    return False
+
+
+def _scope_hits_denies(scope: str, denies: tuple[str, ...]) -> bool:
+    """True when a task scope sits INSIDE a denied tree.
+
+    A wider scope that merely *contains* a denied subtree stays legal;
+    the post-run diff gate catches actual writes into it.
+    """
+    from pathlib import PurePosixPath
+
+    sparts = PurePosixPath(scope).parts
+    for deny in denies:
+        dparts = PurePosixPath(deny).parts
+        if sparts[: len(dparts)] == dparts:
+            return True
+    return False
 
 
 def _detect_branch(cwd: Path) -> str | None:

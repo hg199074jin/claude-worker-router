@@ -162,6 +162,8 @@ def run_bounded_fixture(
     token: str = "fixture-secret-token",
     timeout_seconds: float = 180,
     command_override: str | None = None,
+    global_policy_body: str | None = None,
+    project_policy_body: str | None = None,
 ) -> FixtureOutcome:
     """Drive ``execute_task`` end-to-end with the deterministic fake Claude.
 
@@ -197,6 +199,16 @@ def run_bounded_fixture(
     counter_file = tmp / "claude.counter"
     argv_log = tmp / "claude.argv.json"
 
+    global_policy_path: Path | None = None
+    if global_policy_body is not None:
+        global_policy_path = tmp / "global-policy.toml"
+        global_policy_path.write_text(global_policy_body, encoding="utf-8")
+    if project_policy_body is not None and repository is not None:
+        (repository / ".claude-worker-router").mkdir(exist_ok=True)
+        (repository / ".claude-worker-router" / "policy.toml").write_text(
+            project_policy_body, encoding="utf-8"
+        )
+
     overrides = {
         "FAKE_CLAUDE_BEHAVIOR": behavior,
         "FAKE_CLAUDE_SETTINGS_PATH": str(settings_path),
@@ -222,6 +234,7 @@ def run_bounded_fixture(
             run_records=tmp / "runs",
             test_output_limit_bytes=65536,
             claude_settings=settings_path,
+            global_policy_path=global_policy_path,
         )
         request = TaskRequest(
             repository=repository,

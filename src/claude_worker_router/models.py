@@ -181,6 +181,8 @@ class RouterConfig:
     claude_settings: Path
     binary_edit_policy: str = "deny"
     max_concurrency: int = 1
+    # Explicit override for tests; ``None`` means ~/.codex/model-router/policy.toml
+    global_policy_path: Path | None = None
 
 
 @dataclass

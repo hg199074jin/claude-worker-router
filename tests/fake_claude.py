@@ -116,6 +116,12 @@ def _maybe_apply_edit(behavior: str, count: int, worktree: Path) -> None:
         target.write_text("worker\n", encoding="utf-8")
         (worktree / "logo.bin").unlink(missing_ok=True)
         return
+    if behavior == "fix-and-denied":
+        target.write_text("worker\n", encoding="utf-8")
+        denied_dir = worktree / "src" / "blocked"
+        denied_dir.mkdir(parents=True, exist_ok=True)
+        (denied_dir / "hit.txt").write_text("denied-change\n", encoding="utf-8")
+        return
     if behavior == "no-change":
         return
     if behavior == "always-fail":

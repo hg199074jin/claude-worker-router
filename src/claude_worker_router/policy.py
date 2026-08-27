@@ -41,6 +41,10 @@ def _normalize_path(entry: str) -> str:
     return str(pure)
 
 
+#: Invariant layer the worker may never touch, regardless of any file.
+BUILTIN_DENY_PATHS: tuple[str, ...] = (".git", ".claude-worker-router")
+
+
 @dataclass(frozen=True)
 class RouterPolicy:
     """Immutable policy slice; every layer and the effective result share it."""
@@ -60,8 +64,14 @@ class RouterPolicy:
             "max_diff_lines",
         ):
             value = getattr(self, numeric)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"policy {numeric} must be a positive integer")
+            # timeout_seconds may be fractional (tests use sub-second caps);
+            # max_turns/files stay integral in practice but the invariant is
+            # uniform: a strictly positive real quantity.
+            is_number = isinstance(value, (int, float)) and not isinstance(
+                value, bool
+            )
+            if not is_number or value <= 0:
+                raise ValueError(f"policy {numeric} must be > 0 (got {value!r})")
         object.__setattr__(
             self,
             "deny_paths",

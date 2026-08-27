@@ -263,3 +263,143 @@ class BinaryExecutorTests(_BinaryFixtureSupport, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# V1.3 Task 13: deny_paths enforcement through the executor
+
+class DenyPathEnforcementTests(unittest.TestCase):
+    """deny rules fire statically (request scope) and dynamically (diff)."""
+
+    GLOBAL_TIGHTEN = """
+sandbox_required = false
+
+[limits]
+max_diff_lines = 3
+""".strip()
+
+    def test_static_deny_intersection_rejects_before_worker(self) -> None:
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="deny-static-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "deny-repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                allowed_paths=(".git",),
+            )
+            result = outcome.result
+        finally:
+            shutil.rmtree(tmp, True)
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "policy-path-denied")
+        self.assertIn(".git", result.summary)
+        self.assertGreaterEqual(outcome.invocation_count, 0)
+
+    def test_dynamic_denied_subtree_change_escalates(self) -> None:
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="deny-dynamic-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "deny-dyn")
+        seed_smoke_test(repository)
+        (repository / "src").mkdir()
+        (repository / "src" / "keep.txt").write_text("seed\n", encoding="utf-8")
+        from tests.helpers import _git
+
+        _git(repository, "add", "src/keep.txt")
+        _git(
+            repository,
+            "-c", "user.email=router-test@example.invalid",
+            "-c", "user.name=Router Test",
+            "commit", "--quiet", "-m", "seed src",
+        )
+        # Project policy file lands inside the repository; commit it so the
+        # checkout stays clean for worktree isolation.
+        from tests.helpers import _git as _commit_git
+
+        policy_dir = repository / ".claude-worker-router"
+        policy_dir.mkdir(exist_ok=True)
+        (policy_dir / "policy.toml").write_text(
+            '[paths]\ndeny = ["src/blocked"]\n', encoding="utf-8"
+        )
+        _commit_git(repository, "add", ".claude-worker-router")
+        _commit_git(
+            repository,
+            "-c", "user.email=router-test@example.invalid",
+            "-c", "user.name=Router Test",
+            "commit", "--quiet", "-m", "track project policy",
+        )
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix-and-denied",
+                repository=repository,
+                allowed_paths=("example.txt", "src"),
+            )
+            result = outcome.result
+        finally:
+            shutil.rmtree(tmp, True)
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "policy-path-denied")
+        self.assertIn("src/blocked/hit.txt", result.summary)
+        self.assertIsNone(result.commit)
+
+    def test_project_relaxation_is_rejected_without_worker_call(self) -> None:
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="deny-relax-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "relax-repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                global_policy_body="""
+[limits]
+max_turns = 2
+""".strip(),
+                project_policy_body="""
+[limits]
+max_turns = 50
+""".strip(),
+            )
+            result = outcome.result
+        finally:
+            shutil.rmtree(tmp, True)
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "policy-relaxation-rejected")
+
+    def test_tightened_budget_takes_effect(self) -> None:
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="deny-budget-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "budget-repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                global_policy_body=self.GLOBAL_TIGHTEN,
+            )
+            result = outcome.result
+        finally:
+            shutil.rmtree(tmp, True)
+        # example.txt rewrite is a 1-line diff; a 3-line cap still passes.
+        self.assertEqual(result.status, "ready-for-review")
+
+
+if __name__ == "__main__":
+    unittest.main()

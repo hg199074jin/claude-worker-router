@@ -106,6 +106,14 @@ def load_config(path: Path) -> RouterConfig:
             f"max_concurrency must be 1 or 2 (got {raw_concurrency!r})"
         )
 
+    raw_global_policy = _optional("global_policy")
+    if raw_global_policy is None:
+        global_policy_path = None
+    elif isinstance(raw_global_policy, str) and raw_global_policy:
+        global_policy_path = Path(raw_global_policy)
+    else:
+        raise ValueError("global_policy must be a non-empty path string")
+
     raw_binary_policy = _optional("binary_edit_policy")
     if raw_binary_policy is None or raw_binary_policy == "deny":
         binary_edit_policy = "deny"
@@ -128,6 +136,7 @@ def load_config(path: Path) -> RouterConfig:
         claude_settings=claude_settings,
         binary_edit_policy=binary_edit_policy,
         max_concurrency=max_concurrency,
+        global_policy_path=global_policy_path,
     )
 
 
