@@ -286,6 +286,25 @@ def execute_task(
         )
 
     effective = resolved.effective
+    metadata["global_policy_hash"] = resolved.global_fingerprint
+    metadata["project_policy_hash"] = resolved.project_fingerprint
+
+    from .policy import RouterPolicy as _RouterPolicy
+
+    enforced_denies_pre = tuple(
+        sorted(set(effective.deny_paths) | set(BUILTIN_DENY_PATHS))
+    )
+    enforced_effective = _RouterPolicy(
+        max_turns=effective.max_turns,
+        timeout_seconds=effective.timeout_seconds,
+        max_changed_files=effective.max_changed_files,
+        max_diff_lines=effective.max_diff_lines,
+        deny_paths=enforced_denies_pre,
+        sandbox_required=effective.sandbox_required,
+    )
+    metadata["effective_policy_hash"] = enforced_effective.fingerprint()
+    effective = enforced_effective
+
     config = replace(
         config,
         max_turns=effective.max_turns,
@@ -294,7 +313,7 @@ def execute_task(
         max_diff_lines=effective.max_diff_lines,
     )
     enforced_denies = tuple(
-        sorted(set(effective.deny_paths) | set(BUILTIN_DENY_PATHS))
+        sorted(set(effective.deny_paths))
     )
     overlapping = [
         scope

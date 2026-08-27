@@ -89,3 +89,93 @@ class MergePolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# Task 15: canonical policy fingerprints
+
+import hashlib
+import json
+
+
+class FingerprintTests(unittest.TestCase):
+    def test_fingerprint_is_canonical_sha256_and_stable(self) -> None:
+        a = _policy()
+        b = _policy()
+        self.assertEqual(a.fingerprint(), b.fingerprint())
+        expected = hashlib.sha256(
+            json.dumps(a.as_dict(), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.assertEqual(a.fingerprint(), expected)
+        self.assertRegex(a.fingerprint(), r"^[0-9a-f]{64}$")
+
+    def test_fingerprint_changes_on_any_axis(self) -> None:
+        base = _policy().fingerprint()
+        variants = [
+            _policy(max_turns=11),
+            _policy(deny_paths=("secrets", "extra")),
+            _policy(sandbox_required=True),
+        ]
+        for variant in variants:
+            with self.subTest(variant=variant.max_turns):
+                self.assertNotEqual(base, variant.fingerprint())
+
+
+class EvidenceHashIntegrationTests(unittest.TestCase):
+    """Runs record the exact policy layers that governed them."""
+
+    def _run_with_policies(self, *, project_body: str | None):
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        tmp = Path(tempfile.mkdtemp(prefix="pf-hash-"))
+        repository = init_repository(tmp / "hash-repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                global_policy_body="[limits]\nmax_diff_lines = 400\n",
+                project_policy_body=project_body,
+            )
+            run_dir = next(
+                d for d in outcome.runs_root.iterdir() if d.is_dir()
+            )
+            meta = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        finally:
+            shutil.rmtree(tmp, True)
+        return meta
+
+    def test_metadata_records_layer_hashes(self) -> None:
+        meta = self._run_with_policies(project_body=None)
+
+        for key in ("global_policy_hash", "project_policy_hash", "effective_policy_hash"):
+            self.assertIn(key, meta)
+        self.assertRegex(meta["global_policy_hash"], r"^[0-9a-f]{64}$")
+        self.assertIsNone(meta["project_policy_hash"])
+        self.assertNotEqual(meta["global_policy_hash"], meta["effective_policy_hash"])
+
+    def test_project_layer_hash_recorded_when_present(self) -> None:
+        from claude_worker_router.policy import load_policy_file
+
+        body = '[paths]\ndeny = ["infra"]\n'
+        meta = self._run_with_policies(project_body=body)
+        self.assertRegex(meta["project_policy_hash"], r"^[0-9a-f]{64}$")
+
+        import tempfile
+        from pathlib import Path
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            p = tmp / "p.toml"
+            p.write_text(body, encoding="utf-8")
+            parsed = load_policy_file(p)
+            self.assertEqual(meta["project_policy_hash"], parsed.fingerprint())
+        finally:
+            import shutil as _sh
+
+            _sh.rmtree(tmp, True)

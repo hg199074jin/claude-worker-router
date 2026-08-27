@@ -56,6 +56,27 @@ class RouterPolicy:
     deny_paths: tuple[str, ...] = ()
     sandbox_required: bool = False
 
+    def as_dict(self) -> dict:
+        """Canonical JSON-ready projection used for fingerprints."""
+        return {
+            "max_turns": self.max_turns,
+            "timeout_seconds": self.timeout_seconds,
+            "max_changed_files": self.max_changed_files,
+            "max_diff_lines": self.max_diff_lines,
+            "deny_paths": list(self.deny_paths),
+            "sandbox_required": self.sandbox_required,
+        }
+
+    def fingerprint(self) -> str:
+        """SHA-256 over canonical JSON of :meth:`as_dict`."""
+        import hashlib
+        import json
+
+        payload = json.dumps(
+            self.as_dict(), sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def __post_init__(self) -> None:
         for numeric in (
             "max_turns",
@@ -201,6 +222,19 @@ def load_policy_file(
     )
 
 
+_CANONICAL_FLOOR = RouterPolicy(
+    max_turns=1,
+    timeout_seconds=1,
+    max_changed_files=1,
+    max_diff_lines=1,
+)
+
+
+def _canonical(path: Path):
+    """Parse a layer with fixed floor defaults so its identity is stable."""
+    return load_policy_file(path)
+
+
 @dataclass(frozen=True)
 class ResolvedPolicies:
     base_policy: RouterPolicy
@@ -209,6 +243,10 @@ class ResolvedPolicies:
     global_path: Path | None
     project_path: Path | None
     effective: EffectivePolicy
+    # Fingerprints identify each FILE using canonical parsing, independent
+    # of whatever floors it inherited during merging.
+    global_fingerprint: str | None = None
+    project_fingerprint: str | None = None
 
 
 def resolve_effective_policy(
@@ -226,11 +264,15 @@ def resolve_effective_policy(
     loaded_project = None
     used_global_path = None
     used_project_path = None
+    global_fp = None
+    project_fp = None
 
     if global_path is not None and Path(global_path).is_file():
+        canonical = _canonical(Path(global_path))
         loaded_global = load_policy_file(global_path, defaults=base_policy)
         effective = merge_policy(effective, loaded_global)
         used_global_path = Path(global_path)
+        global_fp = canonical.fingerprint()
 
     if repository is not None:
         project_path = Path(repository) / PROJECT_POLICY_RELATIVE
@@ -243,6 +285,7 @@ def resolve_effective_policy(
                 deny_paths=effective.deny_paths,
                 sandbox_required=effective.sandbox_required,
             )
+            project_fp = _canonical(project_path).fingerprint()
             loaded_project = load_policy_file(project_path, defaults=floor)
             effective = merge_policy(effective, loaded_project)
             used_project_path = project_path
@@ -254,4 +297,6 @@ def resolve_effective_policy(
         global_path=used_global_path,
         project_path=used_project_path,
         effective=effective,
+        global_fingerprint=global_fp,
+        project_fingerprint=project_fp,
     )
