@@ -80,6 +80,28 @@ always requires a new run id. Cancelling a running task terminates the
 worker's own process group (never your shell) while keeping its worktree
 and evidence intact.
 
+## Bounded concurrency (V1.5)
+
+`drain` can run at most **two** workers at once when the configuration sets
+`max_concurrency = 2` (default `1`; any value above 2 fails config
+validation). Scheduling rules:
+
+- Two edit tasks may share a batch only when their `allowed_paths` scopes
+  are disjoint *within the same repository*; tasks on different repositories
+  never conflict.
+- Every batch runs under one provider fingerprint (an "epoch"). If CC Switch
+  changes underneath it, dispatch stops immediately (exit code 5), pending
+  tasks stay pending, and running ones finish under their own end-of-run
+  verification — never an automatic switch.
+- A task can opt out of batching with `"exclusive_tests": true`; exclusive
+  runs get a batch of their own and nothing else joins it.
+- `integrate` serializes per repository through an advisory file lock, so a
+  concurrent drainer cannot mutate one main checkout from two places.
+
+This is deliberately narrow: two slots exist to remove real waiting, not to
+build a worker farm. The V1.5 design requires usage evidence (recent queues
+showing ≥20% parallelizable work) before raising limits.
+
 ## Safety model
 
 The selected Claude Code provider is manual-only. Do not include `model`,

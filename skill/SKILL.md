@@ -150,7 +150,26 @@ Rules that survive from interactive delegation: same JSON contract, same
 isolation, same evidence, same provider neutrality. A crashed drain never
 retries itself — interrupted runs become blocked (`runner-interrupted`) and
 only a NEW run re-executes work. Cancelling is user-visible control, not an
-error path; report it as such. V1.4 stays strictly sequential; concurrent
+error path; report it as such.
+
+## Concurrency discipline (V1.5)
+
+With `max_concurrency = 2` a drainer may run two workers at once, but only
+under these rules — communicate them when announcing the route:
+
+- Same-repository tasks batch together only with disjoint `allowed_paths`;
+  different repositories never conflict.
+- Every batch pins one provider fingerprint. If CC Switch changes mid-batch,
+  dispatch stops (exit 5) and pending work stays queued: report this as
+  "provider changed, dispatch stopped", never as a failure of the pending
+  tasks themselves.
+- `"exclusive_tests": true` buys a solo batch for tests that own the whole
+  machine (fixed ports, exclusive fixtures).
+- Integration remains strictly serial per repository regardless of worker
+  parallelism; concurrent integrators get `integration-lock-busy`.
+
+Never suggest raising the limit above two; the design reserves growth for
+evidence-backed future versions. V1.4 stays strictly sequential; concurrent
 execution does not exist until V1.5 earns it with real usage data.
 
 ## Per-task overrides

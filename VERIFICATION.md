@@ -2,6 +2,72 @@
 
 The newest record is at the top; earlier records remain below as history.
 
+# Verified V1.5 — Bounded Concurrency
+
+## Verification Metadata
+
+- Verification date: 2026-08-27
+- Branch: `v1-5-bounded-concurrency` (stacked on `v1-4-run-management`)
+- Task commits:
+
+| Task | Subject                                        | Commit    |
+| ---- | ---------------------------------------------- | --------- |
+| 22   | path conflict engine                            | `174b4f4` |
+| 23   | provider epoch guards dispatch                  | `b4b3550` |
+| 24   | drain concurrency bounded at two                | `ed99af3` |
+| 25   | exclusive test execution (request-level flag)   | `4ca859a` |
+| 26   | per-repository integration lock                 | `c388487` |
+
+Note on ordering: V1.3 was intentionally skipped by owner instruction; the
+exclusive-tests task therefore uses a request-level `exclusive_tests` flag
+instead of V1.3 test profiles, documented as a transitional adaptation.
+
+## Deterministic Suite
+
+`uv run --python 3.12 python -m unittest discover -v` → **184 tests PASS**.
+New suites: `test_scheduler`, `test_provider_epoch`, `test_integration_lock`.
+
+Highlights proven deterministically:
+
+- Component-boundary conflict rules (`src` vs `srcx`), ancestor detection
+  both directions, cross-repo scopes never conflict.
+- Two disjoint read-only tasks genuinely overlap (threading.Barrier would
+  time out under a serial runner).
+- Provider change between dispatches stops further batches with exit code 5,
+  leaving pending rows untouched and no automatic switch.
+- An exclusive run never shares a batch; non-exclusive pairs still overlap.
+- The integration lock refuses a second same-repo holder (including via a
+  symlink alias and a real second process) while different repositories and
+  post-release acquisitions proceed.
+
+## Live Concurrent Drain (Real Provider)
+
+Two independent read-only tasks on two fresh fixture repositories were
+submitted and drained with `max_concurrency = 2` against the CC-Switch
+current provider:
+
+| Field             | Value                                       |
+| ----------------- | ------------------------------------------- |
+| Run ids           | `00d843d71994...`, `42e1813c00fc...`        |
+| Lifecycle/Outcome | ready-for-review / read-only (both)         |
+| Batch selection   | selected 2, claimed 2                       |
+| Wall clock        | 11.29 s span with **10.69 s overlap** (~95%) |
+| Provider epochs   | identical on both rows; no switch            |
+| Evidence          | SHA-256 manifests re-verified byte-exact    |
+
+Serial execution of the same pair would have required roughly twice the
+span; worker-level timestamps prove genuine simultaneous provider sessions.
+
+## Notes / Deviations Recorded
+
+- Exclusive semantics use the request-level flag above instead of V1.3 test
+  profiles until that version lands.
+- The design's data-driven entry gate for concurrency work at scale (recent
+  queue statistics showing ≥20% parallelizable tasks) remains subject to
+  real usage; limits stay hard-capped at two meanwhile.
+
+---
+
 # Verified V1.4 — Run Management
 
 ## Verification Metadata

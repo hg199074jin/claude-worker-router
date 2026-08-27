@@ -385,11 +385,8 @@ def drain(
                 return _finish(0, processed)
 
     # ---- concurrency == 2: batched execution ---------------------------
-    import sys as _sys
-    print(f"[dbg] concurrency branch entered max={getattr(config,'max_concurrency',None)!r}", file=_sys.stderr)
     store = open_store(config)
     first_batch = True
-    results_lock = threading.Lock()
 
     while True:
         if not first_batch:
@@ -416,9 +413,7 @@ def drain(
         if not rows:
             return _finish(0, processed)
 
-        print(f"[dbg] selected {len(rows)} rows", file=_sys.stderr)
         claimed_rows = _claim_rows(store, rows, provider_epoch=provider_epoch)
-        print(f"[dbg] claimed {len(claimed_rows)} rows", file=_sys.stderr)
         first_batch = False
 
         steps: dict[str, dict[str, Any]] = {}
