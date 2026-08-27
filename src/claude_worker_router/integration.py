@@ -161,49 +161,56 @@ def integrate_run(run_id: str, config: RouterConfig) -> str:
             f"{result['escalation_reason']!r}",
         )
 
+    from contextlib import ExitStack
+
     from .scheduler import RepositoryBusy, repository_integration_lock
 
+    # ExitStack guarantees the flock frees on EVERY path out of the merge
+    # critical section -- success, refusal, or an evidence-write failure --
+    # without relying on GC timing to close the lock file handle.
     try:
-        lock = repository_integration_lock(
-            Path(config.run_records).parent / "locks", repository
-        )
-        lock.__enter__()
+        with ExitStack() as stack:
+            stack.enter_context(
+                repository_integration_lock(
+                    Path(config.run_records).parent / "locks", repository
+                )
+            )
+
+            writer = EvidenceWriter(config.run_records, run_id)
+            writer.append_event(
+                "integration-started",
+                worker_commit=worker_commit,
+                base_sha=base_sha,
+            )
+
+            proc = subprocess.run(
+                ["git", "-C", str(repository), "merge", "--ff-only", worker_commit],
+                shell=False,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                detail = (
+                    proc.stderr.strip() or proc.stdout.strip() or "unknown git error"
+                )
+                raise IntegrationError("integration-merge-failed", detail)
+
+            merged_head = _git_capture(
+                repository, ["rev-parse", "HEAD"], error_reason="git-head-failed"
+            )
+
+            metadata_path = writer.run_dir / "metadata.json"
+            metadata_from_disk = json_loads_safe(metadata_path)
+            metadata_from_disk["integrated_at"] = utc_timestamp()
+            metadata_from_disk["integrated_sha"] = merged_head
+            writer.write_metadata(metadata_from_disk)
+            writer.append_event("integration-completed", integrated_sha=merged_head)
+            writer.finalize_manifest()
+
+            return merged_head
     except RepositoryBusy as exc:
         raise IntegrationError("integration-lock-busy", str(exc)) from exc
-
-    writer = EvidenceWriter(config.run_records, run_id)
-    writer.append_event(
-        "integration-started",
-        worker_commit=worker_commit,
-        base_sha=base_sha,
-    )
-
-    proc = subprocess.run(
-        ["git", "-C", str(repository), "merge", "--ff-only", worker_commit],
-        shell=False,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or "unknown git error"
-        lock.__exit__(None, None, None)
-        raise IntegrationError("integration-merge-failed", detail)
-
-    merged_head = _git_capture(
-        repository, ["rev-parse", "HEAD"], error_reason="git-head-failed"
-    )
-
-    metadata_path = writer.run_dir / "metadata.json"
-    metadata_from_disk = json_loads_safe(metadata_path)
-    metadata_from_disk["integrated_at"] = utc_timestamp()
-    metadata_from_disk["integrated_sha"] = merged_head
-    writer.write_metadata(metadata_from_disk)
-    writer.append_event("integration-completed", integrated_sha=merged_head)
-    writer.finalize_manifest()
-
-    lock.__exit__(None, None, None)
-    return merged_head
 
 
 def _verify_manifest(record: dict, run_id: str, config: RouterConfig) -> None:

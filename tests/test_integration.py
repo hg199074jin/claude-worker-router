@@ -234,3 +234,50 @@ class IntegrationServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IntegrationLockReleaseTests(unittest.TestCase):
+    """Regression (review C6): the repo lock frees on EVERY exit path."""
+
+    def test_failure_inside_critical_section_releases_lock(self) -> None:
+        import tempfile
+        import shutil
+        from unittest.mock import patch
+
+        from claude_worker_router.integration import IntegrationError, integrate_run
+        from claude_worker_router.scheduler import (
+            RepositoryBusy,
+            repository_integration_lock,
+        )
+
+        tmp = Path(tempfile.mkdtemp(prefix="lock-release-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repository = init_repository(tmp / "repo")
+        seed_smoke_test(repository)
+        outcome = run_bounded_fixture(tmp, behavior="fix", repository=repository)
+        run_id = outcome.result.run_id
+        self.assertEqual(outcome.result.status, "ready-for-review")
+
+        lock_root = Path(outcome.config.run_records).parent / "locks"
+
+        class _BoomWriter:
+            def __init__(self, records_root, run_id):
+                self.run_dir = Path(records_root) / run_id
+
+            def append_event(self, *a, **k):
+                raise OSError("simulated evidence failure in critical section")
+
+        # The failure happens right AFTER the lock is taken, BEFORE merge.
+        with patch(
+            "claude_worker_router.integration.EvidenceWriter", _BoomWriter
+        ):
+            with self.assertRaises(OSError):
+                integrate_run(run_id, outcome.config)
+
+        # The lock MUST be free now: a second holder can acquire in-process.
+        with repository_integration_lock(lock_root, repository):
+            pass
+
+        # And a real integration still succeeds afterwards.
+        merged = integrate_run(run_id, outcome.config)
+        self.assertEqual(merged, outcome.result.commit)
