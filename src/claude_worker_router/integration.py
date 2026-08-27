@@ -161,6 +161,16 @@ def integrate_run(run_id: str, config: RouterConfig) -> str:
             f"{result['escalation_reason']!r}",
         )
 
+    from .scheduler import RepositoryBusy, repository_integration_lock
+
+    try:
+        lock = repository_integration_lock(
+            Path(config.run_records).parent / "locks", repository
+        )
+        lock.__enter__()
+    except RepositoryBusy as exc:
+        raise IntegrationError("integration-lock-busy", str(exc)) from exc
+
     writer = EvidenceWriter(config.run_records, run_id)
     writer.append_event(
         "integration-started",
@@ -177,6 +187,7 @@ def integrate_run(run_id: str, config: RouterConfig) -> str:
     )
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or "unknown git error"
+        lock.__exit__(None, None, None)
         raise IntegrationError("integration-merge-failed", detail)
 
     merged_head = _git_capture(
@@ -191,6 +202,7 @@ def integrate_run(run_id: str, config: RouterConfig) -> str:
     writer.append_event("integration-completed", integrated_sha=merged_head)
     writer.finalize_manifest()
 
+    lock.__exit__(None, None, None)
     return merged_head
 
 
