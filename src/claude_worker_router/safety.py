@@ -109,3 +109,77 @@ def _within_any(rel_path: str, allowed_paths: tuple[str, ...]) -> bool:
         == PurePosixPath(allowed).parts
         for allowed in allowed_paths
     )
+
+
+def find_binary_changes(workspace: Path) -> tuple[str, ...]:
+    """Return sorted paths whose diff shows Git's binary marker (``-``).
+
+    numstat prints ``-`` for added/deleted line counts of binary content,
+    which makes ``diff_lines`` meaningless; callers must deny such changes
+    before trusting any scope or budget verdict.
+    """
+    workspace = Path(workspace)
+    offenders: set[str] = set()
+
+    tracked = subprocess.run(
+        ["git", "-C", str(workspace), "diff", "--numstat", "HEAD"],
+        shell=False,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    _collect_binary_paths(tracked.stdout, offenders)
+
+    untracked = _git_untracked_files(workspace)
+    for rel in untracked:
+        no_index = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(workspace),
+                "diff",
+                "--no-index",
+                "--numstat",
+                "/dev/null",
+                rel,
+            ],
+            shell=False,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        # Exit code 1 just means "files differ"; anything else is an error.
+        if no_index.returncode not in (0, 1):
+            raise RuntimeError(
+                f"git diff --no-index failed for {rel}: "
+                f"{no_index.stderr.strip() or 'unknown error'}"
+            )
+        _collect_binary_paths(no_index.stdout, offenders)
+    return tuple(sorted(offenders))
+
+
+def _collect_binary_paths(numstat_output: str, offenders: set[str]) -> None:
+    for line in numstat_output.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        if "-" in (parts[0], parts[1]):
+            # ``git diff --no-index`` names synthetic entries like
+            # "/dev/null => added.bin"; keep only the real path.
+            path_cell = parts[-1]
+            if " => " in path_cell:
+                path_cell = path_cell.split(" => ", 1)[1]
+            offenders.add(path_cell)
+
+
+def _git_untracked_files(workspace: Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(workspace), "ls-files", "--others", "--exclude-standard"],
+        shell=False,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]

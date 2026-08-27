@@ -166,5 +166,100 @@ class SymlinkExecutorIntegrationTests(unittest.TestCase):
         self.assertEqual(outcome.result.status, "ready-for-review")
 
 
+class _BinaryFixtureSupport:
+    """Shared seeding: a tracked binary the worker may try to touch."""
+
+    BINARY_NAME = "logo.bin"
+    ORIGINAL_BYTES = b"\x89PNG\r\n\x1a\n\x00fixture-binary-payload\x00"
+
+    def _seed_binary(self, repository: Path) -> Path:
+        from tests.helpers import _git
+
+        (repository / self.BINARY_NAME).write_bytes(self.ORIGINAL_BYTES)
+        _git(repository, "add", self.BINARY_NAME)
+        _git(
+            repository,
+            "-c",
+            "user.email=router-test@example.invalid",
+            "-c",
+            "user.name=Router Test",
+            "commit",
+            "--quiet",
+            "-m",
+            "track fixture binary",
+        )
+        return repository
+
+
+class BinaryDetectionUnitTests(unittest.TestCase):
+    """``find_binary_changes`` reports numstat '-' rows as binary offenders."""
+
+    def test_unit_api_exists_and_flags_binary_addition(self) -> None:
+        from claude_worker_router.safety import find_binary_changes
+        from tests.helpers import GitWorkspaceScaffold, init_repository, seed_smoke_test
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            repository = init_repository(tmp / "repo")
+            seed_smoke_test(repository)
+            scaffold = GitWorkspaceScaffold.create(repository)
+            (scaffold.path / "blob.bin").write_bytes(b"\x00\x01\x02\xff")
+            self.assertEqual(find_binary_changes(scaffold.path), ("blob.bin",))
+
+
+class BinaryExecutorTests(_BinaryFixtureSupport, unittest.TestCase):
+    """End-to-end: any tracked/untracked binary edit escalates fail-closed."""
+
+    def _run_with_behavior(self, behavior: str, allowed_paths=("example.txt",)):
+        import shutil
+
+        tmp = Path(tempfile.mkdtemp(prefix="safety-binary-exec-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "binary-repo")
+        seed_smoke_test(repository)
+        self._seed_binary(repository)
+
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior=behavior,
+                repository=repository,
+                allowed_paths=allowed_paths,
+            )
+        finally:
+            shutil.rmtree(tmp, True)
+        return outcome.result
+
+    def test_modified_tracked_binary_is_denied(self) -> None:
+        result = self._run_with_behavior("fix-and-binary-edit")
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "binary-change-denied")
+        self.assertIn(self.BINARY_NAME, result.summary)
+        self.assertIsNone(result.commit)
+
+    def test_added_untracked_binary_is_denied(self) -> None:
+        result = self._run_with_behavior("fix-and-binary-add")
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "binary-change-denied")
+        self.assertIn("added.bin", result.summary)
+
+    def test_deleted_tracked_binary_is_denied(self) -> None:
+        result = self._run_with_behavior("fix-and-binary-delete")
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "binary-change-denied")
+
+    def test_text_only_change_still_passes(self) -> None:
+        result = self._run_with_behavior("fix")
+        self.assertEqual(result.status, "ready-for-review")
+
+    def test_binary_denied_takes_precedence_over_scope_exceeded(self) -> None:
+        # The binary sits OUTSIDE allowed_paths and budgets stay default; the
+        # reason must still be binary-change-denied because scope metrics are
+        # meaningless once a binary enters the diff.
+        result = self._run_with_behavior("fix-and-binary-edit")
+        self.assertEqual(result.escalation_reason, "binary-change-denied")
+
+
 if __name__ == "__main__":
     unittest.main()

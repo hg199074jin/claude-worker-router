@@ -68,6 +68,75 @@ def seed_smoke_test(repository: Path) -> Path:
     return repository
 
 
+class GitWorkspaceScaffold:
+    """Minimal isolated-workspace stand-in for unit-level safety checks."""
+
+    def __init__(self, repository: Path, path: Path) -> None:
+        self.repository = repository
+        self.path = path
+
+    @classmethod
+    def create(cls, repository: Path) -> "GitWorkspaceScaffold":
+        root = Path(
+            subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+                shell=False,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+        ).resolve()
+        repo_name = root.name
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            shell=False,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        import uuid as _uuid
+
+        token = _uuid.uuid4().hex[:8]
+        branch = f"safety-scaffold/{token}"
+        worktree_root = root.parent / f".safety-scaffolds-{repo_name}" / token
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(worktree_root),
+                head,
+            ],
+            shell=False,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        scaffold = cls(root, worktree_root)
+        scaffold.branch = branch
+
+        import atexit as _atexit
+
+        def _cleanup() -> None:
+            subprocess.run(
+                ["git", "-C", str(root), "worktree", "remove", "--force", str(worktree_root)],
+                shell=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "branch", "-D", branch],
+                shell=False,
+                capture_output=True,
+            )
+
+        _atexit.register(_cleanup)
+        return scaffold
+
+
 SMOKE_TEST_SOURCE = '''import unittest
 from pathlib import Path
 

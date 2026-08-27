@@ -92,6 +92,14 @@ def load_config(path: Path) -> RouterConfig:
     else:
         raise ValueError("claude_settings must be a non-empty path string")
 
+    raw_binary_policy = _optional("binary_edit_policy")
+    if raw_binary_policy is None or raw_binary_policy == "deny":
+        binary_edit_policy = "deny"
+    else:
+        raise ValueError(
+            f"binary_edit_policy must be \"deny\" (got {raw_binary_policy!r})"
+        )
+
     return RouterConfig(
         command=command,
         provider=provider,
@@ -104,6 +112,7 @@ def load_config(path: Path) -> RouterConfig:
         run_records=run_records,
         test_output_limit_bytes=test_output_limit_bytes,
         claude_settings=claude_settings,
+        binary_edit_policy=binary_edit_policy,
     )
 
 

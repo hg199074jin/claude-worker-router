@@ -31,6 +31,45 @@ allowed_test_binaries = ["uv", "python3", "npm"]
             self.assertEqual(config.max_turns, 12)
             self.assertEqual(config.correction_limit, 1)
 
+    def test_binary_edit_policy_defaults_to_deny_and_only_accepts_deny(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(
+                """
+[worker]
+command = "claude"
+provider = "cc-switch-current"
+max_turns = 12
+timeout_seconds = 1200
+correction_limit = 1
+max_changed_files = 5
+max_diff_lines = 500
+allowed_test_binaries = ["uv"]
+""".strip(),
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertEqual(config.binary_edit_policy, "deny")
+
+            path.write_text(
+                """
+[worker]
+command = "claude"
+provider = "cc-switch-current"
+max_turns = 12
+timeout_seconds = 1200
+correction_limit = 1
+max_changed_files = 5
+max_diff_lines = 500
+allowed_test_binaries = ["uv"]
+
+binary_edit_policy = "allow"
+""".strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, 'must be "deny"'):
+                load_config(path)
+
     def test_rejects_relative_worker_command_with_path_separator(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"

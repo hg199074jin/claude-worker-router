@@ -32,7 +32,11 @@ from .provider import (
     fingerprint_provider,
     read_provider_snapshot,
 )
-from .safety import ExternalSymlinkError, validate_symlinks
+from .safety import (
+    ExternalSymlinkError,
+    find_binary_changes,
+    validate_symlinks,
+)
 
 
 #: The complete tool whitelist exposed to the Claude worker. ``Bash`` is
@@ -258,20 +262,34 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
         _set_escalation(result, "tests-failed-after-correction", last_summary)
 
     if workspace is not None:
+        # Binary changes are checked first: their numstat rows carry ``-``,
+        # so file/diff-line budgets would silently under-count them.
+        binary_denial = None
+        git_measure_error: str | None = None
         try:
-            measure = workspace.measure_changes(
-                config.max_changed_files,
-                config.max_diff_lines,
-                request.allowed_paths,
-            )
-            result.changed_files = list(measure.files)
-            result.diff_lines = measure.diff_lines
-        except PathScopeExceededError as exc:
-            _set_escalation(result, "path-scope-exceeded", str(exc))
-        except ScopeExceededError as exc:
-            _set_escalation(result, "scope-exceeded", str(exc))
+            binary_denial = _detect_binary_changes(workspace)
         except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
-            _set_escalation(result, "git-measure-failed", str(exc))
+            git_measure_error = str(exc)
+
+        if binary_denial is not None:
+            _set_escalation(result, "binary-change-denied", binary_denial)
+        elif git_measure_error is not None:
+            _set_escalation(result, "git-measure-failed", git_measure_error)
+        else:
+            try:
+                measure = workspace.measure_changes(
+                    config.max_changed_files,
+                    config.max_diff_lines,
+                    request.allowed_paths,
+                )
+                result.changed_files = list(measure.files)
+                result.diff_lines = measure.diff_lines
+            except PathScopeExceededError as exc:
+                _set_escalation(result, "path-scope-exceeded", str(exc))
+            except ScopeExceededError as exc:
+                _set_escalation(result, "scope-exceeded", str(exc))
+            except (subprocess.CalledProcessError, OSError, RuntimeError) as exc:
+                _set_escalation(result, "git-measure-failed", str(exc))
 
         try:
             writer.write_diff(workspace.render_patch())
@@ -311,6 +329,14 @@ def execute_task(request: TaskRequest, config: RouterConfig) -> RunResult:
             _set_escalation(result, "git-commit-failed", _subprocess_summary(exc))
 
     return _finish_result(config, run_id, request, result, writer, metadata)
+
+
+def _detect_binary_changes(workspace: GitWorkspace) -> str | None:
+    """Return a denial summary when binary changes exist; ``None`` otherwise."""
+    offenders = find_binary_changes(workspace.path)
+    if not offenders:
+        return None
+    return "binary changes are denied by policy: " + ", ".join(offenders)
 
 
 def _prepare_workspace(

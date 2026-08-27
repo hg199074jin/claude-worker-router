@@ -12,3 +12,7 @@ allowed_test_binaries = ["uv", "python3", "npm"]
 run_records = "/absolute/path/to/.codex/model-router/runs"
 test_output_limit_bytes = 65536
 claude_settings = "/absolute/path/to/.claude/settings.json"
+
+# V1.2 accepts only "deny": worker runs that add, modify, or delete any
+# binary file escalate with binary-change-denied.
+binary_edit_policy = "deny"

@@ -102,6 +102,20 @@ def _maybe_apply_edit(behavior: str, count: int, worktree: Path) -> None:
         target.write_text("worker\n", encoding="utf-8")
         (worktree / "outside.txt").write_text("outside\n", encoding="utf-8")
         return
+    if behavior == "fix-and-binary-edit":
+        target.write_text("worker\n", encoding="utf-8")
+        binary = worktree / "logo.bin"
+        original = binary.read_bytes() if binary.exists() else b"seed"
+        binary.write_bytes(original + b"\x00tampered\xff")
+        return
+    if behavior == "fix-and-binary-add":
+        target.write_text("worker\n", encoding="utf-8")
+        (worktree / "added.bin").write_bytes(b"\x00\x01\x02new-binary\xff")
+        return
+    if behavior == "fix-and-binary-delete":
+        target.write_text("worker\n", encoding="utf-8")
+        (worktree / "logo.bin").unlink(missing_ok=True)
+        return
     if behavior == "no-change":
         return
     if behavior == "always-fail":

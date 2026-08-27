@@ -94,6 +94,7 @@ class RouterConfig:
     run_records: Path
     test_output_limit_bytes: int
     claude_settings: Path
+    binary_edit_policy: str = "deny"
 
 
 @dataclass

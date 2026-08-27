@@ -114,8 +114,8 @@ class GitWorkspace:
                 f"+++ b/{rel}\n"
             )
             try:
-                text = (self.path / rel).read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
+                text = (self.path / rel).read_bytes().decode("utf-8", errors="replace")
+            except OSError:
                 parts.append(f"{header}Binary file {rel} added\n")
                 continue
             body = "".join(f"+{line}\n" for line in text.splitlines())
@@ -124,12 +124,18 @@ class GitWorkspace:
 
 
 def _run_git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Invoke git with an explicit argv list and capture text output."""
+    """Invoke git with an explicit argv list and capture text output.
+
+    ``errors="replace"`` keeps evidence rendering alive when a diff embeds
+    non-UTF-8 bytes (Git suppresses true binary content, but NUL-free
+    hostile content is still emitted verbatim).
+    """
     return subprocess.run(
         ["git", "-C", str(repository), *args],
         shell=False,
         check=True,
         text=True,
+        errors="replace",
         capture_output=True,
     )
 
