@@ -61,17 +61,36 @@ def load_config(path: Path) -> RouterConfig:
         raise ValueError("worker.allowed_test_binaries must be a list of non-empty strings")
     allowed_test_binaries = tuple(allowed)
 
-    run_records = Path(data["run_records"]) if "run_records" in data else Path.home() / ".codex/model-router/runs"
-    test_output_limit_bytes = (
-        _positive_int(data["test_output_limit_bytes"], "test_output_limit_bytes")
-        if "test_output_limit_bytes" in data
-        else 65536
-    )
-    claude_settings = (
-        Path(data["claude_settings"])
-        if "claude_settings" in data
-        else Path.home() / ".claude/settings.json"
-    )
+    # ``config.example.toml`` historically places the optional keys after the
+    # ``[worker]`` header, so accept both scopes; explicit worker values win.
+    def _optional(name: str) -> object:
+        if name in worker:
+            return worker[name]
+        return data.get(name)
+
+    raw_run_records = _optional("run_records")
+    if isinstance(raw_run_records, str) and raw_run_records:
+        run_records = Path(raw_run_records)
+    elif "run_records" not in worker and "run_records" not in data:
+        run_records = Path.home() / ".codex/model-router/runs"
+    else:
+        raise ValueError("run_records must be a non-empty path string")
+
+    raw_output_limit = _optional("test_output_limit_bytes")
+    if raw_output_limit is None:
+        test_output_limit_bytes = 65536
+    else:
+        test_output_limit_bytes = _positive_int(
+            raw_output_limit, "test_output_limit_bytes"
+        )
+
+    raw_claude_settings = _optional("claude_settings")
+    if isinstance(raw_claude_settings, str) and raw_claude_settings:
+        claude_settings = Path(raw_claude_settings)
+    elif "claude_settings" not in worker and "claude_settings" not in data:
+        claude_settings = Path.home() / ".claude/settings.json"
+    else:
+        raise ValueError("claude_settings must be a non-empty path string")
 
     return RouterConfig(
         command=command,

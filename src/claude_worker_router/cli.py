@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from .config import RouterConfig, default_config_path, load_config
+from .doctor import DoctorCheck, overall_status, render_json, run_doctor
 from .executor import execute_task
 from .models import TaskRequest
 
@@ -75,6 +76,10 @@ def _dispatch_command(args: argparse.Namespace) -> int:
     try:
         config = load_config(Path(args.config) if args.config else default_config_path())
     except (FileNotFoundError, ValueError, OSError) as exc:
+        if args.command == "doctor":
+            # Doctor must be able to diagnose its own configuration failure.
+            failure = [DoctorCheck("router-config", "error", str(exc))]
+            return _run_doctor_command_checks(failure, json_mode=args.json)
         print(f"config error: {exc}", file=sys.stderr)
         return 2
 
@@ -89,6 +94,36 @@ def _dispatch_command(args: argparse.Namespace) -> int:
     return handler(args, config)
 
 
+def _doctor_command(args: argparse.Namespace, config: RouterConfig) -> int:
+    repository = Path(args.repo).expanduser().resolve() if args.repo else None
+    checks = run_doctor(config, repository=repository)
+    return _run_doctor_command_checks(checks, json_mode=args.json)
+
+
+def _run_doctor_command_checks(
+    checks: list[DoctorCheck], *, json_mode: bool
+) -> int:
+    overall = overall_status(checks)
+    if json_mode:
+        sys.stdout.write(render_json(checks, overall))
+        sys.stdout.write("\n")
+    else:
+        symbols = {"ok": "✓", "warning": "!", "error": "✗"}
+        for check in checks:
+            sys.stdout.write(
+                f"{symbols.get(check.status, '?')} {check.name}: {check.detail}\n"
+            )
+        verdict = {
+            "ok": "READY",
+            "warning": "READY WITH WARNINGS",
+            "error": "NOT READY",
+        }[overall]
+        sys.stdout.write(f"\n{verdict}\n")
+    if overall == "ok":
+        return 0
+    return 1 if overall == "warning" else 2
+
+
 def _noop_command(args: argparse.Namespace, config: RouterConfig) -> int:
     print(f"error: '{args.command}' is not implemented yet", file=sys.stderr)
     return 2
@@ -96,7 +131,7 @@ def _noop_command(args: argparse.Namespace, config: RouterConfig) -> int:
 
 #: Placeholder handlers; each V1.2 task replaces its own entry.
 _COMMAND_HANDLERS: dict[str, object] = {
-    "doctor": _noop_command,
+    "doctor": _doctor_command,
     "list": _noop_command,
     "show": _noop_command,
     "integrate": _noop_command,
@@ -118,7 +153,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("doctor", help="diagnose the local router environment")
+    doctor = subparsers.add_parser("doctor", help="diagnose the local router environment")
+    doctor.add_argument(
+        "--repo",
+        help="also run repository checks against this path",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON instead of text",
+    )
     subparsers.add_parser("list", help="list recorded worker runs")
     show = subparsers.add_parser("show", help="show one recorded run")
     show.add_argument("run_id")

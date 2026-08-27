@@ -141,10 +141,11 @@ class SubcommandDispatchTests(unittest.TestCase):
     """Known subcommands route through the dispatcher; placeholders fail closed."""
 
     def test_placeholder_subcommands_return_nonzero_until_implemented(self) -> None:
-        # Superseded per-command when Tasks 4/5/8/9 land; kept here so the
+        # Superseded per-command when Tasks 5/8/9 land; kept here so the
         # dispatcher never grows a silent success for an unbuilt command.
+        # ``doctor`` left the placeholder pool in Task 4 and is covered by
+        # tests.test_doctor.
         for argv in (
-            ["doctor"],
             ["list"],
             ["show", "some-run-id"],
             ["integrate", "some-run-id"],
@@ -160,7 +161,7 @@ class SubcommandDispatchTests(unittest.TestCase):
         # Task 1 only guarantees argument plumbing; the placeholder still
         # exits non-zero even with an explicit --config value.
         with patch.object(cli, "load_config", return_value="sentinel-config"):
-            code, _, err = _run_main(["--config", "/tmp/config.toml", "doctor"])
+            code, _, err = _run_main(["--config", "/tmp/config.toml", "list"])
         self.assertNotEqual(code, 0)
         self.assertNotEqual(err.strip(), "")
 
