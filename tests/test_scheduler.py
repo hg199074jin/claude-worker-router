@@ -316,3 +316,94 @@ class ClaimAbandonmentTests(QueueCliHarness):
                 f"{run_id} abandoned in running state",
             )
             self.assertEqual(row["lifecycle"], "ready-for-review")
+
+
+# --------------------------------------------------------------------------
+# Re-review #1: join budget & genuine wedge handling
+
+from claude_worker_router.config import RouterConfig as _RC
+
+
+def _budget_config(timeout_seconds=1200, correction_limit=1) -> RouterConfig:
+    return _RC(
+        command="claude",
+        provider="cc-switch-current",
+        max_turns=5,
+        timeout_seconds=timeout_seconds,
+        correction_limit=correction_limit,
+        max_changed_files=5,
+        max_diff_lines=500,
+        allowed_test_binaries=("uv",),
+        run_records=Path("/tmp/unused-runs"),
+        test_output_limit_bytes=65536,
+        claude_settings=Path("/tmp/unused-settings.json"),
+        max_concurrency=2,
+    )
+
+
+class JoinBudgetTests(unittest.TestCase):
+    def test_budget_covers_correction_loop_and_tests(self) -> None:
+        from claude_worker_router.task_queue import _join_budget
+
+        # correction_limit=1 → two worker attempts; one test phase each
+        # plus the attempt itself; plus slack. The old fixed budget
+        # (timeout+30) covered only ONE attempt.
+        config = _budget_config(timeout_seconds=1200, correction_limit=1)
+        budget = _join_budget(config, n_test_commands=1)
+        self.assertGreaterEqual(budget, 2 * 1200 * 2)
+        old_style = config.timeout_seconds + 30
+        self.assertGreater(budget, old_style)
+
+    def test_zero_correction_still_covers_attempt_plus_tests(self) -> None:
+        from claude_worker_router.task_queue import _join_budget
+
+        config = _budget_config(timeout_seconds=60, correction_limit=0)
+        self.assertGreaterEqual(_join_budget(config, n_test_commands=2), 60 * 3)
+
+
+class WedgedThreadStopsDrainTests(QueueCliHarness):
+    def test_genuine_wedge_blocks_row_and_stops_draining(self) -> None:
+        import time as _time
+
+        text = self.config_path.read_text(encoding="utf-8")
+        self.config_path.write_text(text + "\nmax_concurrency = 2\n", encoding="utf-8")
+        from claude_worker_router.config import load_config
+
+        self._config = load_config(self.config_path)
+
+        payload = _valid_task(repository=str(self.tmp / "wedge"))
+        Path(payload["repository"]).mkdir(exist_ok=True)
+        _, submitted = self._submit(payload)
+        run_id = submitted["run_id"]
+
+        release = threading.Event()
+
+        def slow_fake(request, config, on_child_start=None, run_id=None):
+            release.wait(timeout=10)  # simulate a wedged worker
+            return RunResult(run_id=run_id or "", status="read-only")
+
+        with (
+            patch(
+                "claude_worker_router.task_queue.execute_task", slow_fake
+            ),
+            patch(
+                "claude_worker_router.task_queue.read_current_fingerprint",
+                side_effect=lambda cfg: "fp",
+            ),
+            patch("claude_worker_router.task_queue.os.getpid", return_value=998),
+            patch(
+                "claude_worker_router.task_queue._join_budget",
+                side_effect=lambda cfg, n_test_commands: 0.05,
+            ),
+        ):
+            code, out, err = self._main(
+                ["--config", str(self.config_path), "drain"]
+            )
+            try:
+                self.assertEqual(code, 3)
+                self.assertIn("runner-wedged", out + err)
+                row = self._store().get(run_id)
+                self.assertEqual(row["lifecycle"], "blocked")
+                self.assertEqual(row["outcome"], "runner-wedged")
+            finally:
+                release.set()
