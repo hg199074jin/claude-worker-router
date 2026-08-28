@@ -40,6 +40,7 @@ from .policy import (
 )
 from .safety import (
     ExternalSymlinkError,
+    SymlinkScanError,
     find_binary_changes,
     validate_symlinks,
 )
@@ -247,6 +248,10 @@ def execute_task(
             record_event("symlink-scan-denied", detail=str(exc))
             _set_escalation(result, "external-symlink-denied", str(exc))
             return _finish_result(config, run_id, request, result, writer, metadata)
+        except SymlinkScanError as exc:
+            record_event("symlink-scan-failed", detail=str(exc))
+            _set_escalation(result, "symlink-scan-failed", str(exc))
+            return _finish_result(config, run_id, request, result, writer, metadata)
         record_event("symlink-scan-passed")
 
     # Policy fold (config floor ← global file ← project file), tightened
@@ -265,6 +270,14 @@ def execute_task(
     except PolicyRelaxationRejected as exc:
         record_event("policy-rejected", detail=str(exc))
         _set_escalation(result, "policy-relaxation-rejected", str(exc))
+        return _finish_result(config, run_id, request, result, writer, metadata)
+    except (ValueError, OSError) as exc:
+        # Malformed TOML, unknown keys, bad types, or an unreadable policy
+        # file fail closed as a structured escalation (TOMLDecodeError and
+        # UnicodeDecodeError are ValueError subclasses).
+        detail = f"{type(exc).__name__}: {exc}"
+        record_event("policy-unreadable", detail=detail)
+        _set_escalation(result, "policy-unreadable", detail)
         return _finish_result(config, run_id, request, result, writer, metadata)
 
     # Test-profile resolution happens before any preflight that inspects

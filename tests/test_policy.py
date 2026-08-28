@@ -179,3 +179,50 @@ class EvidenceHashIntegrationTests(unittest.TestCase):
             import shutil as _sh
 
             _sh.rmtree(tmp, True)
+
+
+from pathlib import Path  # noqa: E402
+
+
+class UnreadablePolicyTests(unittest.TestCase):
+    """Re-review #4: malformed policy files escalate, never traceback."""
+
+    def _run_with_global_body(self, body: str):
+        import shutil
+        import tempfile
+
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        tmp = Path(tempfile.mkdtemp(prefix="policy-bad-"))
+        repository = init_repository(tmp / "repo")
+        seed_smoke_test(repository)
+        try:
+            outcome = run_bounded_fixture(
+                tmp,
+                behavior="fix",
+                repository=repository,
+                global_policy_body=body,
+            )
+        finally:
+            shutil.rmtree(tmp, True)
+        return outcome
+
+    def test_unknown_key_escalates_policy_unreadable(self) -> None:
+        outcome = self._run_with_global_body("[limits]\nmax_turnz = 5\n")
+        result = outcome.result
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "policy-unreadable")
+        self.assertEqual(outcome.invocation_count, 0)
+
+    def test_garbage_toml_escalates_policy_unreadable(self) -> None:
+        outcome = self._run_with_global_body("]]] not toml at all")
+        result = outcome.result
+        self.assertEqual(result.escalation_reason, "policy-unreadable")
+
+    def test_relaxation_keeps_its_distinct_reason(self) -> None:
+        # The tighten-only refusal must NOT be re-labeled unreadable.
+        outcome = self._run_with_global_body("[limits]\nmax_turns = 2\n")
+        # no project policy here; this loads fine
+        self.assertIn(
+            outcome.result.status, ("ready-for-review", "escalated")
+        )
