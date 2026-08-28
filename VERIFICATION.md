@@ -2,6 +2,53 @@
 
 The newest record is at the top; earlier records remain below as history.
 
+# Review Hardening Pass — V1.2–V1.3 Stack
+
+Two full code-review cycles (subagent reviewers over
+`c04193d..HEAD`) plus one bounded live run shaped this pass; every fix has
+a deterministic regression test. **235 tests PASS** after the pass
+(225 before it).
+
+## First review round (11 findings → fixed)
+
+| Finding | Subject                                            | Commit    |
+| ------- | -------------------------------------------------- | --------- |
+| C1      | claim queued rows by exact run id (stranding)      | `9ed676d` |
+| C2      | restore lost integrate state-sync hook             | `baea55d` |
+| C3      | enforce binary allowlist on test profiles          | `f6e8aa0` |
+| C6      | release integration lock on every exit path        | `1cf8f50` |
+| C4/C5   | structured errors from doctor + queue CLI          | `bc2568a` |
+| live    | read-only cleanup as in-place no-op (guard order)  | `255cd6a` |
+
+C7 was refuted by measurement (manifest hashes are post-rewrite); C8/C10
+became moot when `_force_claim` was deleted by the C1 rewrite; I7/M7/C11
+cleanups rode along in `bc2568a`.
+
+## Live run (2 provider calls, real CLI end-to-end)
+
+Bogus `--state` exits 2 with guidance; doctor healthy; two tasks
+(edit + read-only, disjoint repos) drained under `max_concurrency = 2`
+with both completed; **CLI integrate succeeded and synced
+`integrated/ready-for-review` in state.db** — the exact call path that
+previously crashed post-merge; cleanup removed the worktree with `git
+branch -d` and kept both evidence directories manifest-verifiable.
+
+## Confirmation re-review (verified + 4 new Important, all fixed)
+
+All six first-round fixes verified correct. New findings and fixes:
+
+| Finding | Subject                                            | Commit    |
+| ------- | -------------------------------------------------- | --------- |
+| #2+#3   | discard intent binding + cancelled-run manifests   | `8e327eb` |
+| #4      | `policy-unreadable` escalation (was traceback)     | `284f9ee` |
+| #1      | join budgets cover correction loops; wedged stop   | `6be0cbf` |
+| #5–#7   | doctor listing / symlink scan fail-closed / race   | `9027be1` |
+
+The confirmation reviewer's verdict "With fixes" is satisfied by the four
+commits above; the interacting pair (#2/#3) landed together as required.
+
+---
+
 # Verified V1.3 — Policy Hardening
 
 ## Verification Metadata
