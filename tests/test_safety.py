@@ -403,3 +403,42 @@ max_turns = 50
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SymlinkScanFailClosedTests(unittest.TestCase):
+    """Re-review #6: an unrunnable scan refuses the run, not passes it."""
+
+    def test_git_failure_escalates_without_worker_call(self) -> None:
+        import shutil
+        import subprocess as _sp
+        import tempfile
+        from unittest.mock import patch
+
+        tmp = Path(tempfile.mkdtemp(prefix="symlink-scanfail-"))
+        from tests.helpers import init_repository, run_bounded_fixture, seed_smoke_test
+
+        repository = init_repository(tmp / "repo")
+        seed_smoke_test(repository)
+
+        real_run = _sp.run
+
+        def failing_ls_files(argv, **kwargs):
+            if "ls-files" in argv:
+                raise _sp.CalledProcessError(1, argv)
+            return real_run(argv, **kwargs)
+
+        try:
+            with patch(
+                "claude_worker_router.safety.subprocess.run",
+                side_effect=failing_ls_files,
+            ):
+                outcome = run_bounded_fixture(
+                    tmp, behavior="fix", repository=repository
+                )
+            result = outcome.result
+        finally:
+            shutil.rmtree(tmp, True)
+
+        self.assertEqual(result.status, "escalated")
+        self.assertEqual(result.escalation_reason, "symlink-scan-failed")
+        self.assertEqual(outcome.invocation_count, 0)

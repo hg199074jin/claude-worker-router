@@ -20,6 +20,14 @@ class ExternalSymlinkError(RuntimeError):
     """Raised when a tracked symlink fails the containment scan."""
 
 
+class SymlinkScanError(RuntimeError):
+    """Raised when the symlink scan itself cannot run (git failure).
+
+    The scan is a security gate: an unreadable index must refuse the run,
+    never silently pass as "no symlinks found".
+    """
+
+
 def validate_symlinks(
     repository: Path,
     allowed_paths: tuple[str, ...],
@@ -88,8 +96,10 @@ def _tracked_symlinks(repo_root: Path) -> list[tuple[str, Path]]:
             text=True,
             capture_output=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return []
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        raise SymlinkScanError(
+            f"cannot enumerate tracked files for symlink scan: {exc}"
+        ) from exc
 
     links: list[tuple[str, Path]] = []
     for entry in proc.stdout.split("\0"):

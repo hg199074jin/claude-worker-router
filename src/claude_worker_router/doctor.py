@@ -256,7 +256,14 @@ def _check_stale_worktrees(repo_root: Path) -> DoctorCheck:
     router_dir = repo_root.parent / ".codex-worktrees" / repo_root.name
     if not router_dir.is_dir():
         return DoctorCheck("stale-worktrees", "ok", "none")
-    remnants = sorted(entry.name for entry in router_dir.iterdir() if entry.is_dir())
+    try:
+        remnants = sorted(
+            entry.name for entry in router_dir.iterdir() if entry.is_dir()
+        )
+    except OSError as exc:
+        return DoctorCheck(
+            "stale-worktrees", "error", f"worktree area unreadable: {exc}"
+        )
     if not remnants:
         return DoctorCheck("stale-worktrees", "ok", "none")
     detail = (

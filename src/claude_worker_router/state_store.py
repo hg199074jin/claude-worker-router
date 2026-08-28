@@ -86,7 +86,15 @@ class StateStore:
                 for row in conn.execute("PRAGMA table_info(runs)").fetchall()
             }
             if "provider_epoch" not in columns and version < 2:
-                conn.execute("ALTER TABLE runs ADD COLUMN provider_epoch TEXT")
+                try:
+                    conn.execute(
+                        "ALTER TABLE runs ADD COLUMN provider_epoch TEXT"
+                    )
+                except sqlite3.OperationalError as exc:
+                    # Two processes racing the first migration: the winner
+                    # already added the column. Anything else is real.
+                    if "duplicate column" not in str(exc).lower():
+                        raise
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
