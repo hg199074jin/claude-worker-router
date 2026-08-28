@@ -5,96 +5,205 @@
 
 [English](README.md)
 
-一个与提供商无关的执行器：它让 Codex 将边界清晰的编码任务交给
-Claude Code 中当前选定的模型，并保留可审查的执行证据。对于编辑任务，
-它会在隔离的 Git worktree 中工作。
+Claude Worker Router 让 Codex 把边界清晰的实现任务交给 Claude Code，
+但仍由 Codex 负责协调、复核和最终决定。它调用你在 Claude Code / CC Switch
+中`手动选择`的提供商，例如 MiniMax、GLM 或其他兼容提供商；它不会保存提供商
+档案、指定模型，也不会自动切换或 fallback。
 
-路由器**不会**选择、切换或在模型之间自动 fallback。请在 CC Switch 中
-手动选择提供商；路由器只会通过 Claude Code 调用当前配置。
+```text
+你在 CC Switch 中手动选择提供商
+                    │
+Codex ── 结构化 JSON ──> Router ──> Claude Code
+  │                              │             │
+  └── 审查与批准                  └── 编辑任务使用隔离 Git worktree
+```
 
-> 这是一个刻意保守的工具。架构决策、密钥、安全边界、生产环境变更和
-> 远程写入仍由 Codex 负责；worker 只适合小范围、可回滚、可测试的任务。
+这是一个刻意保守的工具：它只适用于小范围、可回滚、可测试的修改；不适用于
+架构决策、凭据、生产操作、破坏性任务或大范围重构。
 
-## 功能
+## 任务该交给谁
 
-- 通过 Claude Code 执行单个结构化 JSON 任务，不将任务文本放到命令行。
-- 使用 `--safe-mode` 与固定工具集，worker 没有 Bash 权限。
-- 编辑任务创建隔离 worktree；只读任务无法编辑文件。
-- 强制执行仓库相对路径的 `allowed_paths`、变更预算和已批准的测试命令。
-- 由执行器以最小、非敏感的环境运行测试。
-- 记录 worker 修改所基于的不可变 base SHA。
-- 在调用 worker 之前对 Git 跟踪的符号链接 fail closed
-  （`external-symlink-denied`）；默认拒绝任何二进制文件改动
-  （`binary-change-denied`）。
-- 保存脱敏的提供商指纹和完整的每次运行证据目录：request、result、
-  metadata、tests、完整 diff 补丁、append-only 事件时间线，以及 SHA-256
-  完整性清单。
-- 返回结构化的升级原因，而不是静默地换一个提供商重试。
+| 任务类型 | 建议负责人 | 原因 |
+| --- | --- | --- |
+| 一个有本地测试的定点修复 | Claude Code worker | diff 有边界，验收标准可观察 |
+| 狭窄的代码审查或排查 | `read-only` worker | 不会暴露文件编辑工具 |
+| 鉴权、密钥、支付、生产或基础设施 | Codex | 属于安全或远端写入边界 |
+| 跨模块设计或无边界重构 | Codex | 需要架构判断 |
+| worker 升级、超时或权限失败 | Codex | 不会偷偷重试或换模型 |
 
-## Run 管理命令
+## 能保证什么，不能保证什么
 
-除 stdin 执行器外，V1.2 提供五个共用同一核心的子命令：
+Router 会：
+
+- 从标准输入读取一份结构化 JSON，避免把任务文本放进命令行参数；
+- 使用固定工具集，worker 没有 Bash 权限；
+- 为编辑任务创建独立 Git worktree；只读任务无法编辑文件；
+- 强制检查 `allowed_paths`、变更预算和已批准的测试 argv；
+- 由执行器以最小、无敏感信息的环境运行测试；
+- 记录不可变 base SHA 与脱敏后的提供商指纹；
+- 默认拒绝不安全的已跟踪符号链接和二进制改动；
+- 保存 request、result、metadata、测试输出、完整补丁、事件时间线和
+  SHA-256 清单，作为可复核证据；
+- 返回结构化升级原因，而非悄悄换模型或换提供商重试。
+
+Router 不会选择或修改 CC Switch / Claude Code 的提供商设置，不会自动合并
+worker 输出，不会把 worktree 伪装成操作系统级沙箱，也不会让安全敏感或生产
+任务自动变得可委派。
+
+## 快速开始
+
+### 1. 安装前置条件
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- Git
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
+- CC Switch，或其他`手动`配置 Claude Code 提供商的方式
 
 ```sh
-claude-worker-router doctor [--repo PATH] [--json]  # 环境诊断（0=就绪 1=有警告 2=不可用）
+git clone git@github.com:hg199074jin/claude-worker-router.git
+cd claude-worker-router
+uv sync
+```
+
+### 2. 配置 Router，但不要复制凭据
+
+```sh
+mkdir -p ~/.codex/model-router
+cp config.example.toml ~/.codex/model-router/config.toml
+```
+
+在复制后的文件中填写 `run_records` 和 `claude_settings` 的占位路径。凭据仍留在
+Claude Code / CC Switch 中；Router 配置文件不包含 API Key 或 Token。
+
+### 3. 检查环境
+
+```sh
+uv run claude-worker-router doctor --json
+```
+
+`doctor` 在可用时返回 `0`，有警告时返回 `1`，无法安全运行时返回 `2`。
+
+### 4. 安装 Codex 路由技能
+
+```sh
+ln -s "$(pwd)/skill" ~/.codex/skills/claude-worker-router
+```
+
+随附技能会告诉 Codex 何时可委派、何时必须由 Codex 自己负责。
+
+## 任务 JSON 契约
+
+每次执行都是通过标准输入传入的一份 JSON。编辑任务必须给出仓库相对的
+`allowed_paths`，并且至少给出一个已批准的项目内测试命令。
+
+```json
+{
+  "repository": "/absolute/path/to/your-project",
+  "task": "修正 src/pricing/discount.py 中的折扣计算。",
+  "acceptance_criteria": [
+    "200 元商品打 75 折后返回 150。",
+    "聚焦的单元测试退出码为 0。"
+  ],
+  "mode": "edit",
+  "allowed_paths": ["src/pricing/discount.py"],
+  "test_commands": [["uv", "run", "python", "-m", "unittest", "-v"]]
+}
+```
+
+```sh
+printf '%s' '<任务 JSON>' | uv run claude-worker-router
+```
+
+`read-only` 任务不能带测试命令，也不会得到编辑工具：
+
+```json
+{
+  "repository": "/absolute/path/to/your-project",
+  "task": "找出 checkout 测试失败的可能原因。",
+  "acceptance_criteria": ["报告结论与涉及文件。"],
+  "mode": "read-only",
+  "allowed_paths": []
+}
+```
+
+| 可选字段 | 含义 |
+| --- | --- |
+| `exclusive_tests` | 为需要独占资源的测试预留一个独占队列批次 |
+| `test_profile` | 使用配置中的命名测试方案，替代内联 `test_commands` |
+
+`test_profile` 与 `test_commands` 互斥。任何试图指定 model、settings 或
+provider 覆盖项的请求都会被拒绝。
+
+## 结果、证据与集成
+
+编辑任务的成功状态是 `ready-for-review`，它`不会`自动合并。只读任务的成功
+状态是 `read-only`。`escalated` 结果会给出精确的 `escalation_reason`。
+
+```text
+pending → running → ready-for-review → integrated
+                   └───────────────→ blocked / cancelled
+```
+
+请按下列流程交接，而不要直接合并 worker 分支：
+
+1. 使用 `show RUN_ID` 检查证据。
+2. 审查补丁、改动路径、测试输出、base SHA 和脱敏提供商信息。
+3. 人工明确批准集成。
+4. 执行 `integrate RUN_ID`；它只会 fast-forward。
+5. 不再需要 worker worktree 时执行 `cleanup RUN_ID`。
+
+```sh
+claude-worker-router doctor [--repo PATH] [--json]
 claude-worker-router list [--repo ...] [--status ...] [--limit N] [--json]
-claude-worker-router show RUN_ID [--json]           # 复核单次 run 的证据摘要
-claude-worker-router integrate RUN_ID               # 通过校验后 fast-forward 集成
-claude-worker-router cleanup RUN_ID [--discard]     # 清理隔离产物；证据永久保留
-claude-worker-router cleanup --stale                # 报告超过 168 小时的陈旧 run
+claude-worker-router show RUN_ID [--json]
+claude-worker-router integrate RUN_ID
+claude-worker-router cleanup RUN_ID [--discard]
+claude-worker-router cleanup --stale [--stale-hours 168]
 ```
 
-编辑任务的标准生命周期为：`ready-for-review` → `show` → 人工审查 →
-显式批准 → `integrate` → `cleanup`。integrate 的前置检查会拒绝脏的主工作区
-（`integration-dirty-checkout`）、基点漂移（`integration-base-diverged`）、
-未通过的测试以及证据哈希不一致的情况。它只做 fast-forward 合并——没有
-rebase、没有强推、也不会制造 merge commit；如果主分支已前进，由 Codex
-决定下一步。证据目录是永久记录，cleanup 永远不会删除它们。
+集成会拒绝脏工作区、基点漂移（`integration-base-diverged`）、失败测试、缺失
+worker 分支和证据 SHA-256 清单不一致。它不会 rebase、强推、自动解决冲突，
+也不会创建 merge commit。`cleanup` 只删除 Router 创建的隔离产物，证据会保留；
+使用 `--discard` 显式放弃尚未集成的改动。
 
-## 队列与取消（V1.4）
-
-任务密集时可以把提交与执行解耦：
+## 队列、取消与恢复
 
 ```sh
-printf '%s' '{...任务 JSON...}' | claude-worker-router submit   # 立即返回 pending
-claude-worker-router queue [--state ...] [--json]
-claude-worker-router drain [--once]     # 单 worker，严格顺序执行
-claude-worker-router cancel RUN_ID      # 支持 pending / running / ready-for-review
+printf '%s' '<任务 JSON>' | claude-worker-router submit
+claude-worker-router queue --state pending --json
+claude-worker-router drain [--once]
+claude-worker-router cancel RUN_ID
 ```
 
-`submit` 复用与 stdin 相同的 JSON 契约，另加可选的 `priority`（越大越先
-执行）与 `parent_run_id`；两者仅存于状态库，不进入证据契约。生命周期
-（`pending → running → ready-for-review / integrated / blocked /
-cancelled`）记录在运行记录目录旁的 SQLite `state.db` 中，重启不丢。
-上次 drain 异常中断会在下次启动时转为 blocked（`runner-interrupted`），
-并由 `doctor --json` 的 queue-health 检查暴露——重新执行必须使用新的
-run id。取消 running 任务只会终止 worker 自己的进程组（绝不波及你的
-shell），worktree 与证据完整保留。
+`submit` 使用相同的任务 JSON，另加可选 `priority`（数值越大越优先）和
+`parent_run_id`；队列字段只存于 SQLite，不写入任务证据。状态保存在运行记录旁
+的 `state.db` 中。
 
-## 有界并发（V1.5）
+若 drainer 在运行中中断，`doctor` 会显示 `queue-health`，下一次 drain 会将旧
+任务标记为 `blocked` / `runner-interrupted`。它绝不会被隐式重新执行；只有你
+决定重试时才提交一个新 run。取消运行中的任务只会终止 worker 的专属进程组，
+不会影响你的 shell，并保留其 worktree 与证据。
 
-当配置写入 `max_concurrency = 2` 时，`drain` 最多同时运行 **两个** worker
-（默认 `1`；大于 2 直接判定配置非法）。调度规则：
+## 有界并发
 
-- 同一仓库内，两个编辑任务只有在 `allowed_paths` 范围互不相交时才能同批；
-  不同仓库的任务永不冲突。
-- 每个批次运行在同一个 provider 指纹（epoch）之下。若期间 CC Switch 发生
-  变化，派发立即停止（退出码 5）：待执行任务保持 pending，运行中的任务按
-  各自的收尾指纹校验结束——绝不自动切换。
-- 任务可用 `"exclusive_tests": true` 退出共批：排他任务独占一个批次。
-- `integrate` 通过建议性文件锁按仓库串行化，避免两个入口同时改动同一主
-  工作区。
+设置 `max_concurrency = 2` 后，最多同时运行两个 worker。默认是 `1`，
+任何大于 `2` 的值都会被拒绝。
 
-这是刻意收窄的能力：两个并发位是为了消除真实等待，而不是做 worker 农场。
-V1.5 设计要求以真实使用数据（近期队列中 ≥20% 可并行任务）作为进一步放宽
-的前提。
+- 同仓库编辑任务仅在 `allowed_paths` 范围不相交时才能同批；不同仓库不会冲突。
+- 每个批次固定一个提供商指纹。若期间 CC Switch 发生变化，派发以退出码 `5`
+  停止，待执行任务仍留在队列，不会自动选择其他提供商。
+- `exclusive_tests: true` 会让任务独占一个批次。
+- 集成仍通过建议性锁按仓库串行化。
 
-## 策略层（V1.3）
+两个并发位是当前版本刻意设置的上限，而不是 worker 农场。
 
-`config.toml` 里的限额是运营者的运行上限；策略在此基础上按机器和项目进一步收紧：
+## 策略与安全边界
 
-```sh
-# ~/.codex/model-router/policy.toml            （全局）
+可选的全局和项目策略文件只能在 `config.toml` 基础上继续收紧限制：
+
+```toml
+# ~/.codex/model-router/policy.toml
 sandbox_required = false
 [limits]
 max_turns = 6
@@ -104,138 +213,75 @@ deny = ["secrets", "deployment/prod"]
 ```
 
 ```toml
-# <repo>/.claude-worker-router/policy.toml     （项目，随 Git 提交！）
+# <repo>/.claude-worker-router/policy.toml
 [limits]
 max_turns = 4
 [paths]
 deny = ["infra"]
 ```
 
-合并规则：数值只许变小（min）、deny 只许增加（并集）、布尔安全要求只会开启。
-项目文件试图放宽已解析的全局值会立即失败（`policy-relaxation-rejected`），
-绝不静默钳制。每次运行的证据都会记录各层及最终生效规则集的 SHA-256 指纹，
-回答“这个 worker 当时是在什么策略下执行的”。
+数值限制取更小值，deny 路径取并集，安全布尔值只能从关闭变为开启。项目策略
+尝试放宽全局规则会被拒绝为 `policy-relaxation-rejected`；每次运行都会记录
+策略指纹。
 
-V1.3 新增的硬边界：`.git` 与 `.claude-worker-router` 永远禁写；改动命中
-deny 前缀以 `policy-path-denied` 升级；任务可用 `"test_profile"` 引用配置中
-的命名测试方案（与内联 `test_commands` 互斥），`exclusive = true` 的方案直接
-接入 V1.5 批次排他；未知名称升级为 `test-profile-unknown`。设置
-`sandbox_required = true` 目前会 fail closed 返回 `sandbox-unavailable`；
-可行性研究见
-`docs/superpowers/research/2026-08-27-macos-sandbox-feasibility.md`。
+`.git` 和 `.claude-worker-router` 始终禁止 worker 编辑。设置
+`sandbox_required = true` 目前会 fail closed 为 `sandbox-unavailable`：
+worktree 隔离`不是`操作系统级沙箱。详见
+[macOS 可行性研究](docs/superpowers/research/2026-08-27-macos-sandbox-feasibility.md)。
 
-## 安全模型
+在审查前，应把所有 worker 输出当作不可信改动。密钥、依赖凭据的测试、基础
+设施变更、破坏性操作、生产任务和重大设计工作都应留给 Codex。
 
-Claude Code 当前使用的提供商只能手动选择。请求中不要带 `model`、
-`settings` 或 `provider_profile`，也不要期待自动切换或 fallback。
+## 配置参考
 
-worktree 隔离可以将修改与主工作区分开，但它**不是**操作系统级别的安全
-沙箱。请把 worker 输出当作不可信改动处理：审查 diff、查看执行证据，确认
-后再集成。不要把安全敏感任务、密钥、依赖凭据的测试、基础设施变更、
-破坏性操作或大型架构工作交给 worker。
+从 [config.example.toml](config.example.toml) 开始。
 
-## 环境要求
+| 字段 | 用途 |
+| --- | --- |
+| `command` | 如 `claude` 的裸可执行文件名，或绝对可执行路径 |
+| `provider` | 必须为 `cc-switch-current`，仅表示手动提供商路由 |
+| `max_turns`、`timeout_seconds`、`correction_limit` | 单次运行及修正循环的硬限制 |
+| `max_changed_files`、`max_diff_lines` | 编辑 diff 预算 |
+| `allowed_test_binaries` | 测试 argv 中允许使用的可执行文件 |
+| `run_records` | 持久证据目录；默认 `~/.codex/model-router/runs` |
+| `claude_settings` | Claude Code 设置；默认 `~/.claude/settings.json` |
+| `max_concurrency` | 默认 `1`，最大 `2` |
+| `binary_edit_policy` | 目前只支持 `"deny"` |
 
-- Python 3.12 或更高版本
-- [uv](https://docs.astral.sh/uv/)
-- Git
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
-- CC Switch（或其他能够手动提供 Claude Code 配置的方式）
+包含 `/` 的相对可执行路径、字符串形式的 shell 测试命令、不安全路径、编辑任务
+缺失测试命令或二进制改动，都会在 worker 改动前被拒绝。
 
-## 安装
+## 排错
 
-克隆仓库，并在隔离环境中安装：
+| 现象 | 含义 | 下一步 |
+| --- | --- | --- |
+| `doctor` 返回 2 | 必需的本地依赖或配置不可用 | 运行 `doctor --json`，处理具名失败检查 |
+| `worker-permission-denied` | 任务需要固定工具集之外的能力 | 收窄或重设计任务；不要授予宽泛 shell 权限 |
+| `worker-timeout` / `worker-turn-limit` | 任务超过有界预算 | 交回 Codex；不要自动切换提供商 |
+| `external-symlink-denied` | 已跟踪符号链接外逃、损坏或成环 | 修复链接后再委派 |
+| `policy-path-denied` / `binary-change-denied` | 请求或实际改动触及受保护边界 | 由 Codex 处理，或有意识地调整策略 |
+| `drain` 返回 5 | 批次期间提供商发生变化 | 待执行任务仍在队列；稳定手动选择后再 drain |
+| `integration-base-diverged` | worker 开始后目标分支已前进 | 审查新基点并创建新的 run |
 
-```sh
-git clone git@github.com:hg199074jin/claude-worker-router.git
-cd claude-worker-router
-uv sync
-```
-
-将 `skill/` 目录链接或复制到 Codex 技能目录。macOS 示例：
-
-```sh
-ln -s "$(pwd)/skill" ~/.codex/skills/claude-worker-router
-```
-
-复制示例配置，并将两个绝对路径占位符替换为本机路径：
+## 开发与验证
 
 ```sh
-mkdir -p ~/.codex/model-router
-cp config.example.toml ~/.codex/model-router/config.toml
+PYTHONWARNINGS=error uv run --python 3.12 python -m unittest discover -v
+uv build
 ```
 
-配置文件不包含 API Token。Claude Code 从 CC Switch 当前选择的提供商配置中
-读取凭据。
-
-## 在 Codex 中使用
-
-已安装的技能会告诉 Codex 哪些任务可以委派。对于范围受控的编辑，Codex
-通过封装器传入一个 JSON 请求，而不是直接调用 `claude -p`：
-
-```sh
-printf '%s' '{
-  "repository": "/absolute/path/to/your-project",
-  "task": "修复折扣计算。",
-  "acceptance_criteria": ["200 元商品打 75 折后金额正确。"],
-  "mode": "edit",
-  "allowed_paths": ["src/pricing"],
-  "test_commands": [["uv", "run", "python", "-m", "unittest", "-v"]]
-}' | uv run claude-worker-router
-```
-
-仅分析时，使用 `read-only` 模式，并省略测试命令：
-
-```json
-{
-  "repository": "/absolute/path/to/your-project",
-  "task": "找出 checkout 测试失败的可能原因。",
-  "acceptance_criteria": ["报告结论和涉及文件。"],
-  "mode": "read-only",
-  "allowed_paths": []
-}
-```
-
-命令会输出 `RunResult` JSON。正常编辑成功的状态是 `ready-for-review`；
-它不会自动将 worker 的提交合并进主工作区。只读成功的状态是 `read-only`。
-任何 `escalated` 结果都会包含 `escalation_reason`，由 Codex 接管处理。
-
-## 配置
-
-`config.example.toml` 展示了可设置的限制，其中最重要的是：
-
-- `command`：如 `claude` 的裸可执行文件名，或绝对路径。
-- `provider`：当前为 `cc-switch-current`，表示你手动选定的提供商，
-  而不是保存的提供商档案。
-- `max_turns` 和 `timeout_seconds`：单次 worker 运行的硬上限。
-- `max_changed_files` 和 `max_diff_lines`：编辑预算限制。
-- `allowed_test_binaries`：路由器允许用于测试命令的可执行文件白名单。
-- `binary_edit_policy`：V1.2 仅接受 `"deny"`——一旦 worker 增改删任何
-  二进制文件，运行将直接升级，而不是带着无法度量的 diff 进入审查。
-
-建议保持较小的限制和狭窄的路径范围。若一个任务无法以受控 diff 和项目内
-测试命令验证，就应继续由 Codex 处理。
-
-## 开发
-
-运行完整的确定性测试：
-
-```sh
-uv run --python 3.12 python -m unittest discover -v
-```
-
-仓库还包含真实冒烟测试，会调用 Claude Code 当前配置的提供商，并可能消耗
-提供商额度：
+真实冒烟测试会创建新的临时 Git 项目，执行一次只读和一次隔离编辑，然后检查
+测试证据和主工作区哈希。它会调用 Claude Code 当前选定的提供商，可能消耗额度：
 
 ```sh
 tests/live/run_smoke_test.sh
 ```
 
-最新的提交验证证据见 [VERIFICATION.md](VERIFICATION.md)。其中不包含 API
-Token 或 Token 片段。
+历史验证记录见 [VERIFICATION.md](VERIFICATION.md)，其中不包含 API Token
+或 Token 片段。
 
-## 项目状态
+## 范围与贡献状态
 
-这是一个早期且刻意聚焦的工具，为个人的 Codex + Claude Code 工作流设计。
-它优先选择清晰的升级与人工审查，而非静默自治。待仓库所有者确定许可证和
-贡献规范后，欢迎提交 issue 和贡献。
+这是一个个人使用的、提供商中立的 Codex + Claude Code 工作流工具。它选择
+显式升级、人工审查、可复现证据和手动模型选择，而不是追求自治吞吐量。当前尚未
+选择许可证或贡献政策。

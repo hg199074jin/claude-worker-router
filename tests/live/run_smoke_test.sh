@@ -6,7 +6,7 @@
 #   2. Initialize a local Git repository and commit the failing baseline.
 #   3. Record the main-checkout file hash (the one inside this worktree).
 #   4. Submit a read-only request and verify it cannot mutate the repository.
-#   5. Submit an edit request through the installed wrapper.
+#   5. Submit an edit request through this checkout's CLI.
 #   6. Use the exact test argv
 #      ['uv', 'run', '--python', '3.12', 'python', '-m', 'unittest', '-v'].
 #   7. Verify the result status is ``ready-for-review``.
@@ -25,20 +25,27 @@ set -euo pipefail
 emulate -L zsh
 setopt interactivecomments
 
-readonly REPO_ROOT="/Volumes/ORICO/Projects/claude-worker-router/.worktrees/router-implementation"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 readonly FIXTURE_DIR="${REPO_ROOT}/tests/live/fixture"
-readonly WRAPPER="/Users/sandro/.codex/skills/claude-worker-router/scripts/run_worker.py"
-readonly UV="/opt/homebrew/bin/uv"
+UV="${UV:-$(command -v uv)}"
+[[ -n "${UV}" ]] || { print -- "[smoke] FAIL: uv is not on PATH" >&2; exit 1; }
+readonly UV
+readonly RUN_RECORDS_DIR="${RUN_RECORDS_DIR:-${HOME}/.codex/model-router/runs}"
 
 # ----- helpers ---------------------------------------------------------------
 
 note() { print -- "[smoke] $*"; }
 fail() { print -- "[smoke] FAIL: $*" >&2; exit 1; }
 
+router() {
+  "${UV}" run --project "${REPO_ROOT}" claude-worker-router "$@"
+}
+
 # Run a tiny Python helper via uv to keep JSON parsing out of the shell.
 py_eval() {
   local snippet="$1"
-  "${UV}" run --python 3.12 --quiet python -c "${snippet}" "${2:-}"
+  "${UV}" run --project "${REPO_ROOT}" --python 3.12 --quiet python -c "${snippet}" "${2:-}"
 }
 
 json_field() {
@@ -95,20 +102,20 @@ if [[ "${baseline_test_output}" != *"FAIL"* ]]; then
 fi
 note "baseline test result: failing as expected"
 
-# ----- 4. submit read-only request through the installed wrapper ------------
+# ----- 4. submit read-only request through this checkout's CLI --------------
 
 read_only_request_json="$(printf '%s' \
   '{"repository":"'"${work_dir}"'","task":"Inspect discount.py and report the arithmetic defect in compute_price. Do not edit any file.","acceptance_criteria":["identify that a discount must subtract rather than add"],"mode":"read-only","test_commands":[],"allowed_paths":["discount.py"]}')"
 
-note "invoking read-only worker"
+note "invoking read-only worker via: ${REPO_ROOT}"
 read_only_result_json="$(
   printf '%s' "${read_only_request_json}" \
-    | "${WRAPPER}" \
+    | router \
     || true
 )"
 
 if [[ -z "${read_only_result_json}" ]]; then
-  fail "read-only wrapper produced empty output"
+  fail "read-only router produced empty output"
 fi
 
 print -r -- "${read_only_result_json}" > "${SMOKE_ROOT}/read_only_result.json"
@@ -131,27 +138,27 @@ if [[ "${read_only_repo_hash_before}" != "${read_only_repo_hash_after}" ]]; then
   fail "read-only worker changed the task repository"
 fi
 
-read_only_run_record="/Users/sandro/.codex/model-router/runs/${read_only_run_id}"
+read_only_run_record="${RUN_RECORDS_DIR}/${read_only_run_id}"
 if [[ ! -d "${read_only_run_record}" ]]; then
   fail "read-only run record is missing: ${read_only_run_record}"
 fi
 
-# ----- 5. submit edit request through the installed wrapper -----------------
+# ----- 5. submit edit request through this checkout's CLI -------------------
 
 request_json="$(printf '%s' \
   '{"repository":"'"${work_dir}"'","task":"In discount.py change the sign in compute_price so a 25%% discount on 200 yields 150.0. Do not modify any other file.","acceptance_criteria":["compute_price(200.0, 25.0) == 150.0","uv run --python 3.12 python -m unittest -v reports exit code 0"],"mode":"edit","test_commands":[["uv","run","--python","3.12","python","-m","unittest","-v"]],"allowed_paths":["discount.py"]}')"
 
-note "invoking wrapper:     ${WRAPPER}"
+note "invoking router:      ${REPO_ROOT}"
 
-# Feed the request to the installed executable wrapper.
+# Feed the request to this checkout's CLI.
 result_json="$(
   printf '%s' "${request_json}" \
-    | "${WRAPPER}" \
+    | router \
     || true
 )"
 
 if [[ -z "${result_json}" ]]; then
-  fail "wrapper produced empty output"
+  fail "router produced empty output"
 fi
 
 # Persist a copy of the raw result for review.
@@ -222,8 +229,7 @@ fi
 # ----- 11. print the exact retained worktree and run-record paths ------------
 
 # Locate the exact run record directory returned for this invocation.
-run_records_dir="/Users/sandro/.codex/model-router/runs"
-run_record="${run_records_dir}/${run_id}"
+run_record="${RUN_RECORDS_DIR}/${run_id}"
 if [[ -d "${run_record}" ]]; then
   cp "${run_record}/request.json" "${SMOKE_ROOT}/request.json" 2>/dev/null || true
   cp "${run_record}/result.json" "${SMOKE_ROOT}/executor_result.json" 2>/dev/null || true

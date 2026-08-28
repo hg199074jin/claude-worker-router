@@ -50,6 +50,7 @@ if __name__ == "__main__":
 
 from pathlib import Path
 from unittest.mock import patch
+import sqlite3
 import threading
 import time
 
@@ -361,6 +362,33 @@ class JoinBudgetTests(unittest.TestCase):
         self.assertGreaterEqual(_join_budget(config, n_test_commands=2), 60 * 3)
 
 
+class ExternallyFinalizedStateTests(unittest.TestCase):
+    def test_missing_state_after_external_finalization_returns_safe_blocked_step(self) -> None:
+        """A vanished state DB must not crash a worker thread after a wedge."""
+        from claude_worker_router.state_store import StateTransitionError
+        from claude_worker_router.task_queue import _execute_claim_row
+
+        class StateStoreLostAfterExternalFinalization:
+            def finish(self, *args, **kwargs):
+                raise StateTransitionError("blocked -> ready-for-review")
+
+            def get(self, run_id):
+                raise sqlite3.OperationalError("no such table: runs")
+
+        row = {"run_id": "lost-state-row"}
+        result = RunResult(run_id="lost-state-row", status="read-only")
+        with patch(
+            "claude_worker_router.task_queue._execute_claimed", return_value=result
+        ):
+            step = _execute_claim_row(
+                row, _budget_config(), StateStoreLostAfterExternalFinalization()
+            )
+
+        self.assertEqual(step["lifecycle"], "blocked")
+        self.assertEqual(step["outcome"], "state-unavailable")
+        self.assertTrue(step["externally_finalized"])
+
+
 class WedgedThreadStopsDrainTests(QueueCliHarness):
     def test_genuine_wedge_blocks_row_and_stops_draining(self) -> None:
         import time as _time
@@ -377,10 +405,19 @@ class WedgedThreadStopsDrainTests(QueueCliHarness):
         run_id = submitted["run_id"]
 
         release = threading.Event()
+        worker_finished = threading.Event()
 
         def slow_fake(request, config, on_child_start=None, run_id=None):
             release.wait(timeout=10)  # simulate a wedged worker
             return RunResult(run_id=run_id or "", status="read-only")
+
+        from claude_worker_router.task_queue import _execute_claim_row
+
+        def tracked_execute_claim_row(*args, **kwargs):
+            try:
+                return _execute_claim_row(*args, **kwargs)
+            finally:
+                worker_finished.set()
 
         with (
             patch(
@@ -395,6 +432,10 @@ class WedgedThreadStopsDrainTests(QueueCliHarness):
                 "claude_worker_router.task_queue._join_budget",
                 side_effect=lambda cfg, n_test_commands: 0.05,
             ),
+            patch(
+                "claude_worker_router.task_queue._execute_claim_row",
+                side_effect=tracked_execute_claim_row,
+            ),
         ):
             code, out, err = self._main(
                 ["--config", str(self.config_path), "drain"]
@@ -407,3 +448,4 @@ class WedgedThreadStopsDrainTests(QueueCliHarness):
                 self.assertEqual(row["outcome"], "runner-wedged")
             finally:
                 release.set()
+                self.assertTrue(worker_finished.wait(timeout=2))

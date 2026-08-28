@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from typing import Callable
@@ -147,6 +148,32 @@ def _execute_claimed(
     )
 
 
+def _externally_finalized_step(
+    row: dict[str, Any], result: RunResult, store: StateStore
+) -> dict[str, Any]:
+    """Return a safe terminal result when another actor already finalized it."""
+    try:
+        step_row = store.get(row["run_id"]) or {}
+    except (sqlite3.Error, OSError):
+        # The state database may disappear while a daemon worker is being
+        # torn down. Do not let a reporting read crash that worker; a blocked
+        # result is the conservative answer when the authoritative row cannot
+        # be read.
+        lifecycle = RunLifecycle.BLOCKED.value
+        outcome = "state-unavailable"
+    else:
+        lifecycle = step_row.get("lifecycle", RunLifecycle.CANCELLED.value)
+        outcome = step_row.get("outcome")
+    return {
+        "claimed": True,
+        "run_id": row["run_id"],
+        "lifecycle": lifecycle,
+        "outcome": outcome,
+        "escalation_reason": result.escalation_reason,
+        "externally_finalized": True,
+    }
+
+
 def drain_once(
     config: RouterConfig,
     *,
@@ -184,15 +211,7 @@ def drain_once(
     except StateTransitionError:
         # A concurrent explicit cancel already moved this run to a terminal
         # state; never overwrite an operator's cancellation with our result.
-        step_row = store.get(run_id) or {}
-        return {
-            "claimed": True,
-            "run_id": run_id,
-            "lifecycle": step_row.get("lifecycle", RunLifecycle.CANCELLED.value),
-            "outcome": step_row.get("outcome"),
-            "escalation_reason": result.escalation_reason,
-            "externally_finalized": True,
-        }
+        return _externally_finalized_step(claimed, result, store)
 
     updated = store.get(run_id) or {}
     return {
@@ -478,7 +497,7 @@ def drain(
                         lifecycle=RunLifecycle.BLOCKED,
                         outcome="runner-crashed",
                     )
-                except StateTransitionError:
+                except (StateTransitionError, sqlite3.Error, OSError):
                     pass
                 steps[row["run_id"]] = {
                     "claimed": True,
@@ -526,7 +545,7 @@ def drain(
                             lifecycle=RunLifecycle.BLOCKED,
                             outcome="runner-wedged",
                         )
-                    except StateTransitionError:
+                    except (StateTransitionError, sqlite3.Error, OSError):
                         pass
                     steps[row["run_id"]] = {
                         "claimed": True,
@@ -584,15 +603,7 @@ def _execute_claim_row(
     try:
         store.finish(run_id=row["run_id"], lifecycle=final_lifecycle, outcome=result.status)
     except StateTransitionError:
-        step_row = store.get(row["run_id"]) or {}
-        return {
-            "claimed": True,
-            "run_id": row["run_id"],
-            "lifecycle": step_row.get("lifecycle", RunLifecycle.CANCELLED.value),
-            "outcome": step_row.get("outcome"),
-            "escalation_reason": result.escalation_reason,
-            "externally_finalized": True,
-        }
+        return _externally_finalized_step(row, result, store)
     updated = store.get(row["run_id"]) or {}
     return {
         "claimed": True,
@@ -759,4 +770,3 @@ def execute_single(config: RouterConfig) -> int:
     if step.get("lifecycle") == RunLifecycle.BLOCKED.value:
         return 3
     return 0
-

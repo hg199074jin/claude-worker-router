@@ -85,13 +85,12 @@ class RepositoryLockTests(unittest.TestCase):
             % (project_src, self.lock_root, real)
         )
         env = dict(os.environ, PYTHONPATH=project_src)
-        proc = subprocess.Popen(
+        with subprocess.Popen(
             [sys.executable, "-c", holder_code],
             stdout=subprocess.PIPE,
             text=True,
             env=env,
-        )
-        try:
+        ) as proc:
             assert proc.stdout is not None
             line = proc.stdout.readline().strip()
             assert line == "HELD", line
@@ -99,7 +98,6 @@ class RepositoryLockTests(unittest.TestCase):
             with self.assertRaises(RepositoryBusy):
                 with self._acquire(str(real)):
                     pass
-        finally:
             proc.wait(timeout=10)
 
         deadline = time.time() + 5
