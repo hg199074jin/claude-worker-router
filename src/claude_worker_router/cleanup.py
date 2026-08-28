@@ -77,22 +77,12 @@ def cleanup_run(
         raise CleanupError(f"run {run_id} lacks location metadata")
 
     repository_root = Path(os.path.realpath(repository_raw))
-    # GitWorkspace places worktrees next to the repository; also accept an
-    # in-repo location for hand-migrated setups.
-    allowed_roots = (
-        repository_root / ".codex-worktrees",
-        repository_root.parent / ".codex-worktrees",
-    )
     worktree_path = Path(os.path.realpath(worktree_raw))
-    if not any(worktree_path.is_relative_to(root) for root in allowed_roots):
-        raise CleanupError(
-            f"refusing to remove {worktree_path}: it is not inside a router "
-            f"worktree area ({', '.join(str(r) for r in allowed_roots)})"
-        )
 
-    notes: list[str] = []
-    if Path(os.path.realpath(worktree_raw)) == repository_root:
-        # Read-only runs operate in place and have no isolation artifacts.
+    if worktree_path == repository_root:
+        # Read-only runs operate in place and have no isolation artifacts;
+        # this MUST precede the containment guard below, which only knows
+        # about dedicated worktree areas.
         return CleanupOutcome(
             run_id=run_id,
             removed_worktree=False,
@@ -100,6 +90,20 @@ def cleanup_run(
             already_cleaned=True,
             discarded=discard,
         )
+
+    # GitWorkspace places worktrees next to the repository; also accept an
+    # in-repo location for hand-migrated setups.
+    allowed_roots = (
+        repository_root / ".codex-worktrees",
+        repository_root.parent / ".codex-worktrees",
+    )
+    if not any(worktree_path.is_relative_to(root) for root in allowed_roots):
+        raise CleanupError(
+            f"refusing to remove {worktree_path}: it is not inside a router "
+            f"worktree area ({', '.join(str(r) for r in allowed_roots)})"
+        )
+
+    notes: list[str] = []
 
     worktree_present = worktree_path.is_dir()
     if not worktree_present and not _branch_exists(repository_root, metadata):

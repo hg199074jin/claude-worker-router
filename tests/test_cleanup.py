@@ -222,3 +222,34 @@ class FindStaleRunsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadOnlyCleanupTests(unittest.TestCase):
+    """Regression (live-found): read-only runs clean up as no-ops.
+
+    A read-only run's recorded worktree IS the repository itself; the
+    worktree-area containment guard must not fire before the in-place
+    early return.
+    """
+
+    def test_read_only_run_cleanup_is_already_cleaned(self) -> None:
+        import shutil
+        import tempfile
+
+        from claude_worker_router.cleanup import cleanup_run
+
+        tmp = Path(tempfile.mkdtemp(prefix="ro-cleanup-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repository = init_repository(tmp / "repo")
+        seed_smoke_test(repository)
+        outcome = run_bounded_fixture(tmp, mode="read-only", repository=repository)
+        run_id = outcome.result.run_id
+        self.assertEqual(outcome.result.status, "read-only")
+
+        report = cleanup_run(run_id, outcome.config)
+
+        self.assertTrue(report.already_cleaned)
+        self.assertFalse(report.removed_worktree)
+        self.assertFalse(report.removed_branch)
+        # The repository itself must be untouched.
+        self.assertTrue((repository / "example.txt").exists())
