@@ -58,6 +58,21 @@ def integrate_run(run_id: str, config: RouterConfig) -> str:
             f"final status {final_status!r} is not ready-for-review",
         )
 
+    # 3b: lifecycle gate -- a cancelled (discarded) or otherwise
+    # terminal run must never integrate even if its evidence is repaired.
+    from .state_store import StateStore, default_state_db_path
+
+    state_row = StateStore(default_state_db_path(config)).get(run_id)
+    if state_row is not None:
+        row_lifecycle = state_row.get("lifecycle")
+        if row_lifecycle != "ready-for-review":
+            raise IntegrationError(
+                "integration-status-invalid",
+                f"state db lifecycle is {row_lifecycle!r}; a cancelled or "
+                "otherwise finalized run is not integratable (discard "
+                "intent is binding)",
+            )
+
     # 4: worker commit presence.
     worker_commit = result.get("commit") or metadata.get("worker_commit")
     if not isinstance(worker_commit, str) or not worker_commit:

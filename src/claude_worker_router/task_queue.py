@@ -322,6 +322,33 @@ def _claim_rows(
     return claimed
 
 
+def _join_budget(config: RouterConfig, *, n_test_commands: int) -> float:
+    """Seconds a batch thread may legitimately need before we call it wedged.
+
+    A single run performs up to ``correction_limit + 1`` worker attempts,
+    each individually bounded by ``timeout_seconds`` and followed by one
+    test phase per command (also ``timeout_seconds`` each). The old fixed
+    ``timeout_seconds + 30`` budget covered exactly ONE attempt, so any
+    legitimately correcting run tripped a false wedge diagnosis.
+    """
+    attempts = max(1, config.correction_limit + 1)
+    phases = 1 + max(1, n_test_commands)
+    return attempts * phases * float(config.timeout_seconds) + 60.0
+
+
+def _row_test_command_count(row: dict[str, Any]) -> int:
+    """Best-effort count of a queued row's test commands (>=1)."""
+    try:
+        raw = (Path(row["evidence_path"]) / "request.json").read_text(
+            encoding="utf-8"
+        )
+        data = json.loads(raw)
+        commands = data.get("test_commands") or []
+        return max(1, len(commands))
+    except (OSError, ValueError, TypeError):
+        return 1
+
+
 def drain(
     config: RouterConfig,
     *,
@@ -461,24 +488,60 @@ def drain(
                     "escalation_reason": str(exc)[:200],
                 }
 
+        # Daemon threads: a genuinely wedged worker must not hold the CLI
+        # hostage at interpreter exit; the stranded ``running`` row is
+        # exactly what crash recovery (reconcile_before_drain) owns.
         threads = [
-            threading.Thread(target=_run_one, args=(row,), daemon=False)
+            threading.Thread(target=_run_one, args=(row,), daemon=True)
             for row in claimed_rows
         ]
         for t in threads:
             t.start()
+        budget = max(
+            _join_budget(
+                config, n_test_commands=_row_test_command_count(row)
+            )
+            for row in claimed_rows
+        )
+        wedged = False
         for t in threads:
-            t.join(timeout=config.timeout_seconds + 30)
+            t.join(timeout=budget)
             if t.is_alive():
-                # A worker thread wedged: refuse to claim more batches
-                # and surface the result so the outer loop can stop
-                # cleanly rather than spinning forever.
-                thread_errors.setdefault(
-                    "unknown",
-                    f"worker thread did not finish within "
-                    f"{config.timeout_seconds + 30}s",
-                )
-                break
+                wedged = True
+        if wedged:
+            # A worker thread outlived its full legitimate budget. Mark the
+            # affected rows blocked and STOP draining entirely -- claiming
+            # further batches would exceed max_concurrency with live
+            # stragglers.
+            from .state_store import StateTransitionError
+
+            for row in claimed_rows:
+                if row["run_id"] not in steps:
+                    thread_errors[row["run_id"]] = (
+                        f"worker thread did not finish within {budget:.0f}s"
+                    )
+                    try:
+                        store.finish(
+                            row["run_id"],
+                            lifecycle=RunLifecycle.BLOCKED,
+                            outcome="runner-wedged",
+                        )
+                    except StateTransitionError:
+                        pass
+                    steps[row["run_id"]] = {
+                        "claimed": True,
+                        "run_id": row["run_id"],
+                        "lifecycle": RunLifecycle.BLOCKED.value,
+                        "outcome": "runner-wedged",
+                        "escalation_reason": "runner-wedged",
+                    }
+                    processed.append(steps[row["run_id"]])
+            print(
+                f"dispatch stopped: worker thread exceeded {budget:.0f}s "
+                "legitimate budget; marked runner-wedged and stopped",
+                file=log,
+            )
+            return _finish(3, processed)
 
         if thread_errors:
             for run_id, detail in thread_errors.items():
@@ -548,9 +611,11 @@ def _append_cancel_event(
     config: RouterConfig, run_id: str, *, stage: str, detail: dict[str, Any]
 ) -> None:
     try:
-        EvidenceWriter(config.run_records, run_id).append_event(
-            "cancelled", stage=stage, **detail
-        )
+        writer = EvidenceWriter(config.run_records, run_id)
+        writer.append_event("cancelled", stage=stage, **detail)
+        # events.jsonl grew after the run finalized its manifest; without
+        # re-finalizing, every later integrity check would report drift.
+        writer.finalize_manifest()
     except OSError:
         pass
 

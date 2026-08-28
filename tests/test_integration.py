@@ -281,3 +281,83 @@ class IntegrationLockReleaseTests(unittest.TestCase):
         # And a real integration still succeeds afterwards.
         merged = integrate_run(run_id, outcome.config)
         self.assertEqual(merged, outcome.result.commit)
+
+
+class CancelledRunIntegrityTests(unittest.TestCase):
+    """Re-review #2/#3: discard intent is binding and manifest stays valid."""
+
+    def _ready_run(self, tmp: Path):
+        repository = init_repository(tmp / "repo")
+        seed_smoke_test(repository)
+        outcome = run_bounded_fixture(tmp, behavior="fix", repository=repository)
+        self.assertEqual(outcome.result.status, "ready-for-review")
+        return outcome, repository
+
+    def test_cancelled_run_refuses_integration_even_with_repaired_manifest(self) -> None:
+        import tempfile
+        import shutil
+
+        from claude_worker_router.cleanup import _manifest_verifies  # noqa: F401
+        from claude_worker_router.evidence import EvidenceWriter
+        from claude_worker_router.integration import IntegrationError, integrate_run
+        from claude_worker_router.task_queue import cancel_run
+        from tests.run_store_probe import manifest_ok  # local helper below
+
+        tmp = Path(tempfile.mkdtemp(prefix="cancel-integrity-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        outcome, _repository = self._ready_run(tmp)
+        run_id = outcome.result.run_id
+        # Legacy stdin runs have no lifecycle row; create the
+        # ready-for-review row a queued run would already carry.
+        from claude_worker_router.state_store import StateStore, default_state_db_path
+
+        StateStore(default_state_db_path(outcome.config)).ensure_row(
+            run_id=run_id,
+            repository=str(outcome.repository),
+            mode="edit",
+            final_status="ready-for-review",
+            evidence_path=str(outcome.runs_root / run_id),
+        )
+
+        # Explicit discard of the reviewed result.
+        cancelled = cancel_run(run_id, outcome.config)
+        self.assertEqual(cancelled["action"], "discard-intent-recorded")
+
+        # Repair the manifest the way an honest operator could; the discard
+        # decision itself must still block integration.
+        EvidenceWriter(outcome.runs_root, run_id).finalize_manifest()
+        self.assertTrue(manifest_ok(outcome.runs_root, run_id))
+
+        with self.assertRaises(IntegrationError) as ctx:
+            integrate_run(run_id, outcome.config)
+        self.assertIn(ctx.exception.reason, ("integration-status-invalid",))
+
+    def test_cancel_event_appended_with_refreshed_manifest(self) -> None:
+        import tempfile
+        import shutil
+
+        from claude_worker_router.task_queue import cancel_run
+        from tests.run_store_probe import manifest_ok
+
+        tmp = Path(tempfile.mkdtemp(prefix="cancel-manifest-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        outcome, _repository = self._ready_run(tmp)
+        run_id = outcome.result.run_id
+        from claude_worker_router.state_store import StateStore, default_state_db_path
+
+        StateStore(default_state_db_path(outcome.config)).ensure_row(
+            run_id=run_id,
+            repository=str(outcome.repository),
+            mode="edit",
+            final_status="ready-for-review",
+            evidence_path=str(outcome.runs_root / run_id),
+        )
+        cancel_run(run_id, outcome.config)
+
+        # The cancel event landed AND the manifest still verifies.
+        events_path = outcome.runs_root / run_id / "events.jsonl"
+        self.assertIn('"cancelled"', events_path.read_text(encoding="utf-8"))
+        self.assertTrue(
+            manifest_ok(outcome.runs_root, run_id),
+            "cancel invalidated the manifest without re-finalizing",
+        )
